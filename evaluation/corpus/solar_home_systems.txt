@@ -1,0 +1,13 @@
+Solar Home System Maintenance Guide
+
+This guide is an illustrative sample written for testing AfriSearch. It describes routine care for small solar home systems used in rural households.
+
+Panels. Dust, leaves and bird droppings block sunlight and reduce how much electricity a panel produces. In dry and dusty seasons, clean the panels every two weeks; in the rainy season, once a month is usually enough. Use clean water and a soft cloth or sponge. Do not use soap, detergent or abrasive brushes, because they can scratch the glass and leave a film. Clean the panels early in the morning or late in the afternoon, when the glass is cool, to avoid cracking it with cold water. Never stand or walk on a panel.
+
+Positioning. In countries north of the equator, panels should face south; south of the equator, they should face north. Trim trees and move objects that cast shade on the panels, because shading even part of one panel can reduce the output of the whole string.
+
+Batteries. Lead-acid batteries last longest when they are not discharged below 50 percent of their capacity. Lithium batteries tolerate deeper discharge and typically last five to ten years, compared with two to four years for lead-acid batteries. Keep batteries in a shaded, well-ventilated place off the floor, and check the terminals every month for corrosion. Clean corroded terminals with a mixture of baking soda and water.
+
+Charge controller. The charge controller protects the battery from overcharging and deep discharge. If its indicator light shows red or flashes, the battery is low or there is a fault; switch off loads and let the system recharge.
+
+Inspections. A qualified technician should inspect the wiring, fuses and inverter once a year. Loose connections can cause heat build-up and fires, so any burning smell or melted insulation must be reported immediately and the system switched off.

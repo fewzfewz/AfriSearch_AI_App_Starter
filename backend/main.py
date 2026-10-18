@@ -371,6 +371,7 @@ def retrieve(question: str, top_k: int = 4, min_score: float = MIN_SCORE) -> lis
         question,
         convert_to_numpy=True,
         normalize_embeddings=True,
+        show_progress_bar=False,
     ).astype(np.float32)
     scores = current_embeddings @ vector
     indices = np.argsort(scores)[::-1][:top_k]

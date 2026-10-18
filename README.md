@@ -19,6 +19,7 @@ frontend/app.py   Streamlit UI: upload, index status, model picker, answers, sou
 backend/main.py   FastAPI: ingestion, chunking, embeddings, retrieval, /ask
 backend/llm.py    Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
 tests/            pytest suite (no downloads, keys or GPU needed)
+evaluation/       question set with known answers + scoring script
 data/             uploads/, index.json, embeddings.npy, manifest.json (created at runtime)
 ```
 
@@ -186,6 +187,42 @@ pytest -q
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
 
 The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed.
+
+## Evaluating answer quality
+
+`evaluation/` scores search and the answer models on questions with known answers. It shows whether a change actually helps, for example a different search model, a different `AFRISEARCH_MIN_SCORE`, or Claude versus a local model.
+
+- **Sample documents:** `evaluation/corpus/`, four short illustrative guides on solar maintenance, grain storage, mobile money safety and drinking water.
+- **Questions:** `evaluation/questions.json`, 19 questions the documents answer and 4 they don't.
+
+```bash
+python evaluation/run_eval.py --retrieval-only                 # search only, takes seconds
+python evaluation/run_eval.py --providers qwen-small           # one answer model
+python evaluation/run_eval.py --providers claude chatgpt gemini --top-k 6
+```
+
+The script indexes the documents into a temporary folder, so your `data/` folder is never touched. It prints a summary and every wrong answer, and saves a full JSON report in `evaluation/results/`.
+
+| Metric | Meaning |
+|---|---|
+| right document ranked first / in top k | Search found a passage from the document that answers the question |
+| off-topic questions with no passages | The relevance cutoff filtered the question out before any model saw it |
+| correct | The answer contains every required fact (accepted wordings are listed per fact) |
+| cites right doc | The answer cites an `[S#]` label from the document that answers the question |
+| says not covered | For the 4 off-topic questions: the model said the documents don't cover them instead of inventing an answer |
+
+The grading uses keyword checks, not an AI judge. It is free and gives the same result every time, but it can mark an oddly worded correct answer as wrong, so read the listed failures.
+
+**Using your own documents:** put them in a folder and write a questions file in the same format:
+```json
+[
+  {"id": "q1", "question": "...", "source": "my_file.pdf", "must_include": [["fact wording", "other wording"]]},
+  {"id": "q2", "question": "A question the documents don't answer", "source": null}
+]
+```
+```bash
+python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --providers qwen-small
+```
 
 ## Troubleshooting
 

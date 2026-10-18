@@ -1,0 +1,13 @@
+Mobile Money Safety Tips
+
+This guide is an illustrative sample written for testing AfriSearch. It explains how to protect your mobile money account from fraud.
+
+Your PIN. Never share your PIN with anyone, including family members, agents or people who say they work for the mobile network. Genuine staff will never ask for your PIN. Choose a PIN that is not your birth year or an easy sequence such as 1234, and change it immediately if you think someone has seen it.
+
+Common scams. A frequent scam is the "wrong transfer" message: you receive an SMS saying money was sent to you by mistake, followed by a call asking you to send it back. Before sending anything, check your actual balance through the official menu, because the SMS may be fake. Other scams include messages announcing prizes you never entered for, and calls asking you to dial a code to "update" your account.
+
+Agents. Only use registered agents who display official branding and their agent number. Always count your cash before leaving the agent and keep the confirmation SMS.
+
+Lost or stolen phone. If your phone or SIM card is lost or stolen, call your network's customer care line immediately to block the SIM and freeze the mobile money account. You can then replace the SIM at an official shop with your identity document, and your balance is kept.
+
+Transaction limits. Networks set daily transaction limits to reduce the damage from fraud. Large payments, such as school fees, are safer made directly to the institution's registered paybill or merchant number than to a personal number.
