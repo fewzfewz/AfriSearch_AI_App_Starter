@@ -18,6 +18,7 @@ A local app for asking questions about your own documents. Upload PDF or TXT fil
 frontend/app.py   Streamlit UI: upload, index status, model picker, answers, sources
 backend/main.py   FastAPI: ingestion, chunking, embeddings, retrieval, /ask
 backend/llm.py    Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
+tests/            pytest suite (no downloads, keys or GPU needed)
 data/             uploads/, index.json, embeddings.npy, manifest.json (created at runtime)
 ```
 
@@ -167,6 +168,24 @@ The model-name variables are listed in [Answer models](#answer-models).
 | `GET` | `/providers` | Answer models, whether each is available, and why not |
 | `POST` | `/ask` | `{"question", "top_k", "provider"}` → answer, sources, removed citations |
 | `GET` | `/health` | Status and chunk count |
+
+## Testing
+
+The tests use a fake search model, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
+
+```bash
+pip install -r requirements-dev.txt   # adds pytest and httpx
+pytest -q
+```
+
+| File | Covers |
+|---|---|
+| `tests/test_text_processing.py` | Chunking, citation cleanup, page formatting |
+| `tests/test_documents.py` | Upload, duplicate rejection, incremental and full indexing, failed files, delete, reload from disk |
+| `tests/test_ask.py` | `/ask`: cited answers, relevance cutoff, provider selection and errors |
+| `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
+
+The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed.
 
 ## Troubleshooting
 
