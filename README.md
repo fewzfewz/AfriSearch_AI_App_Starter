@@ -6,7 +6,8 @@ A local app for asking questions about your own documents. Upload PDF or TXT fil
 - Upload PDF and TXT documents; exact duplicates are rejected
 - Extract text with page numbers, split it into sentence-aware chunks that can span pages, and embed them
 - Index only new files (a full rebuild is optional), and delete documents from the UI
-- Semantic search with a relevance cutoff, so unrelated passages are never passed to the model
+- Multilingual semantic search (94 languages, including Amharic, Swahili, Somali, Hausa and Afaan Oromo), so a question in one language can find a document in another
+- A relevance cutoff, so clearly unrelated passages are never passed to the model
 - Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question
 - Citations like `[S1]` link to the source passages; citations that don't match a source are removed
 - Files that can't be indexed (for example scanned PDFs) are reported in the UI
@@ -23,7 +24,7 @@ evaluation/       question set with known answers + scoring script
 data/             uploads/, index.json, embeddings.npy, manifest.json (created at runtime)
 ```
 
-- **Search model:** Sentence Transformers `all-MiniLM-L6-v2`
+- **Search model:** `intfloat/multilingual-e5-small` (see [Search model](#search-model))
 - **Answer models:** see [Answer models](#answer-models)
 - **Storage:** local files under `data/` (a starter implementation, not production storage)
 
@@ -107,7 +108,7 @@ The UI opens at http://localhost:8501.
 4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each passage shows its file, pages and relevance. Always check important claims against them.
 5. **Earlier answers:** your last 10 answers stay available in the session. Click **Show** to bring one back.
 
-**Advanced → Rebuild full index** processes every document again. This is only needed after changing the search model or chunk settings, and those changes are also detected automatically.
+**Advanced → Rebuild full index** processes every document again. You rarely need it: when the search model or chunk settings change, the sidebar shows which documents are out of date, and **Re-index now** (or **Upload and index**) updates just those.
 
 ## Answer models
 
@@ -143,14 +144,30 @@ Local models download from Hugging Face the first time you use them (to `~/.cach
 - **Qwen 2.5 0.5B on a laptop:** on CPU it loads in float32, which most laptop CPUs run much faster than bfloat16. On a 4-core laptop CPU, the first question takes about 30–90 s while the model loads, and later answers take about 5–10 s. Answers to direct questions are usually right, but the model often leaves out citation labels, so check the sources. The 0.5B model only needs transformers 5.x; the 5.8 minimum in `requirements.txt` is for Qwen 3.8.
 - **Offline use:** once a model is downloaded, set `HF_HUB_OFFLINE=1` to start without contacting Hugging Face.
 
+## Search model
+
+The default search model is [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (MIT licence, about 470 MB, downloads on first use). It understands 94 languages and matches questions to documents across languages. On the evaluation set it compares with the previous English-focused default like this:
+
+| Right document in the top 4 | `all-MiniLM-L6-v2` | `multilingual-e5-small` |
+|---|---|---|
+| English questions | 19/21 | 21/21 |
+| Amharic | 3/6 | 6/6 |
+| Swahili | 2/4 | 4/4 |
+| Somali, Afaan Oromo, Hausa | 0/3 | 2/3 |
+| **All questions** | **24/34 (71%)** | **33/34 (97%)** |
+
+- **Relevance cutoff:** E5 models score even unrelated text fairly high (about 0.7–0.83 here), so the cutoff is 0.75 for them instead of 0.2. Cross-language questions often score 0.75–0.80, and a higher cutoff started dropping correct passages. The trade-off is that only some off-topic questions are filtered out; the answer model is told to say when the documents don't cover a question. To tune the cutoff for your own documents, run the evaluation with your own questions and look at the *suggested cutoff* lines.
+- **Switching models:** set `AFRISEARCH_EMBEDDER`, for example `sentence-transformers/all-MiniLM-L6-v2` for a smaller, faster English-only setup. Documents indexed with another model are left out of search, because their vectors can't be compared, and the sidebar shows **Re-index now** to update them.
+
 ## Configuration reference
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `AFRISEARCH_API_URL` | `http://127.0.0.1:8000` | Where the UI finds the API |
 | `AFRISEARCH_DEFAULT_PROVIDER` | first available | Pre-selected answer model |
-| `AFRISEARCH_EMBEDDER` | `sentence-transformers/all-MiniLM-L6-v2` | Search model (changing it re-indexes automatically) |
-| `AFRISEARCH_MIN_SCORE` | `0.2` | Passages less similar than this are ignored |
+| `AFRISEARCH_EMBEDDER` | `intfloat/multilingual-e5-small` | Search model; documents must be re-indexed after changing it |
+| `AFRISEARCH_MIN_SCORE` | `0.75` for E5 models, `0.2` otherwise | Passages less similar than this are ignored |
+| `AFRISEARCH_QUERY_PREFIX` / `AFRISEARCH_PASSAGE_PREFIX` | `query: ` / `passage: ` for E5 models | Text added before questions / passages when embedding |
 | `AFRISEARCH_LOCAL_QUANTIZE` | off | `4bit` loads Qwen 3.8 and Gemma 4 in 4-bit |
 | `AFRISEARCH_LOCAL_MAX_NEW_TOKENS` | `512` | Answer length cap for local GPU models |
 | `AFRISEARCH_ALLOW_CPU` | off | `1` lets GPU models run on CPU |
@@ -192,11 +209,12 @@ The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed.
 
 `evaluation/` scores search and the answer models on questions with known answers. It shows whether a change actually helps, for example a different search model, a different `AFRISEARCH_MIN_SCORE`, or Claude versus a local model.
 
-- **Sample documents:** `evaluation/corpus/`, four short illustrative guides on solar maintenance, grain storage, mobile money safety and drinking water.
-- **Questions:** `evaluation/questions.json`, 19 questions the documents answer and 4 they don't.
+- **Sample documents:** `evaluation/corpus/`, six short illustrative guides: four in English (solar maintenance, grain storage, mobile money safety, drinking water), one in Amharic (coffee) and one in Swahili (chickens).
+- **Questions:** `evaluation/questions.json`, 34 questions the documents answer and 6 they don't. 15 are in Amharic, Swahili, Somali, Afaan Oromo or Hausa, and some ask in one language about a document in another.
 
 ```bash
 python evaluation/run_eval.py --retrieval-only                 # search only, takes seconds
+python evaluation/run_eval.py --retrieval-only --embedders sentence-transformers/all-MiniLM-L6-v2 intfloat/multilingual-e5-small
 python evaluation/run_eval.py --providers qwen-small           # one answer model
 python evaluation/run_eval.py --providers claude chatgpt gemini --top-k 6
 ```
@@ -207,6 +225,8 @@ The script indexes the documents into a temporary folder, so your `data/` folder
 |---|---|
 | right document ranked first / in top k | Search found a passage from the document that answers the question |
 | off-topic questions with no passages | The relevance cutoff filtered the question out before any model saw it |
+| in top k, questions in '…' | The same, broken down by question language |
+| suggested cutoff | Lowest score of a correct top passage vs. highest score of an off-topic one; a cutoff is suggested only if they don't overlap |
 | correct | The answer contains every required fact (accepted wordings are listed per fact) |
 | cites right doc | The answer cites an `[S#]` label from the document that answers the question |
 | says not covered | For the 4 off-topic questions: the model said the documents don't cover them instead of inventing an answer |
@@ -229,6 +249,7 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 - **"Cannot reach the API":** start the backend (step 4) before the UI, and check `AFRISEARCH_API_URL`.
 - **A model is missing from the picker:** open **Other models** for the reason. Usually a key isn't set in the terminal running the API, or there's no GPU.
 - **"No passages were similar enough":** rephrase the question, or lower `AFRISEARCH_MIN_SCORE`.
+- **"documents were indexed with a different search model" / HTTP 409 from `/ask`:** the search model or chunk settings changed. Click **Re-index now** in the sidebar.
 - **A PDF is "Not indexed: no extractable text":** it is probably scanned. OCR isn't supported yet.
 - **Out of GPU memory:** set `AFRISEARCH_LOCAL_QUANTIZE=4bit`, or use gpt-oss-20b.
 - **Only "Qwen 2.5 0.5B" is offered:** that's expected on a machine with no API keys and no NVIDIA GPU. Add keys (setup step 3) to enable Claude, ChatGPT or Gemini; for those, also install `anthropic`, `openai` and `google-genai` into the environment.

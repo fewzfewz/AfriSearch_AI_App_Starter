@@ -44,5 +44,41 @@
   {"id": "none-teff-fertilizer", "question": "What is the best fertilizer for teff?", "source": null},
   {"id": "none-bank-account", "question": "How do I open a bank account in Kenya?", "source": null},
   {"id": "none-panel-price", "question": "How much does a 100-watt solar panel cost?", "source": null},
-  {"id": "none-world-cup", "question": "Who won the 2010 FIFA World Cup?", "source": null}
+  {"id": "none-world-cup", "question": "Who won the 2010 FIFA World Cup?", "source": null},
+
+  {"id": "am-coffee-drying", "lang": "am", "question": "የቡና ፍሬ ለምን ያህል ጊዜ መድረቅ አለበት?",
+   "source": "coffee_care_am.txt", "must_include": [["ሁለት እስከ ሶስት", "2 እስከ 3", "2-3", "two to three", "2 to 3"]]},
+  {"id": "am-coffee-moisture", "lang": "am", "question": "የደረቀ ቡና እርጥበት ስንት በመቶ መሆን አለበት?",
+   "source": "coffee_care_am.txt", "must_include": [["11"], ["12"]]},
+  {"id": "en-coffee-picking", "lang": "en", "question": "Which coffee cherries should be picked at harvest?",
+   "source": "coffee_care_am.txt", "must_include": [["red", "ripe", "ቀይ"]]},
+  {"id": "am-water-highlands", "lang": "am", "question": "በኢትዮጵያ ደጋማ አካባቢዎች ውሃ ለምን ያህል ጊዜ መፍላት አለበት?",
+   "source": "safe_drinking_water.txt", "must_include": [["three minutes", "3 minutes", "ሶስት ደቂቃ", "3 ደቂቃ"]]},
+  {"id": "am-grain-moisture", "lang": "am", "question": "በቆሎ ከመከማቸቱ በፊት እርጥበቱ ምን ያህል መሆን አለበት?",
+   "source": "grain_storage.txt", "must_include": [["13"]]},
+  {"id": "am-money-pin", "lang": "am", "question": "የሞባይል ገንዘብ ፒን ቁጥሬን ለሌላ ሰው መስጠት እችላለሁ?",
+   "source": "mobile_money_safety.txt", "must_include": [["never", "not", "no,", "no.", "አይ", "የለብዎትም", "የለብህም", "በፍጹም", "አይገባም"]]},
+  {"id": "am-chicken-vaccine-repeat", "lang": "am", "question": "የዶሮ ክትባት በየስንት ጊዜው መደገም አለበት?",
+   "source": "kuku_wa_kienyeji_sw.txt", "must_include": [["three months", "3 months", "miezi mitatu", "ሶስት ወር", "3 ወር"]]},
+
+  {"id": "sw-chicken-vaccine-age", "lang": "sw", "question": "Vifaranga wapewe chanjo ya kideri wakiwa na umri gani?",
+   "source": "kuku_wa_kienyeji_sw.txt", "must_include": [["siku saba", "siku 7", "seven days", "7 days"]]},
+  {"id": "sw-chicken-layers-food", "lang": "sw", "question": "Kuku wanaotaga mayai wanahitaji chakula gani?",
+   "source": "kuku_wa_kienyeji_sw.txt", "must_include": [["protini", "protein", "kalsiamu", "calcium"]]},
+  {"id": "en-chicken-sick", "lang": "en", "question": "What should I do with a sick chicken?",
+   "source": "kuku_wa_kienyeji_sw.txt", "must_include": [["separate", "isolate", "atenganishwe", "tenganisha", "away from"]]},
+  {"id": "sw-solar-dusty", "lang": "sw", "question": "Ninapaswa kusafisha paneli za sola mara ngapi wakati wa vumbi?",
+   "source": "solar_home_systems.txt", "must_include": [["two weeks", "2 weeks", "wiki mbili", "wiki 2"]]},
+  {"id": "sw-money-stolen", "lang": "sw", "question": "Simu yangu ikiibiwa, nifanye nini mara moja?",
+   "source": "mobile_money_safety.txt", "must_include": [["block", "freeze", "customer care", "zuia", "huduma kwa wateja"]]},
+
+  {"id": "so-grain-dry-test", "lang": "so", "question": "Sideen ku ogaan karaa in hadhuudhku si fiican u qallalay?",
+   "source": "grain_storage.txt", "must_include": [["salt", "cusbo"]]},
+  {"id": "om-water-chlorine", "lang": "om", "question": "Kilooriinii bishaan keessa erga naqnee booda hammam eeggachuu qabna?",
+   "source": "safe_drinking_water.txt", "must_include": [["30", "thirty", "half an hour"]]},
+  {"id": "ha-solar-battery-life", "lang": "ha", "question": "Batirin lithium yana ɗaukar shekaru nawa?",
+   "source": "solar_home_systems.txt", "must_include": [["five to ten", "5 to 10", "5-10", "biyar zuwa goma"]]},
+
+  {"id": "none-am-world-cup", "lang": "am", "question": "የ2010 የዓለም ዋንጫን ማን አሸነፈ?", "source": null},
+  {"id": "none-sw-election", "lang": "sw", "question": "Rais wa kwanza wa Tanzania alikuwa nani?", "source": null}
 ]

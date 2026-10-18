@@ -34,6 +34,13 @@ def test_sentence_longer_than_chunk_size_is_split_by_words():
     assert [words(text) for _, _, text in chunks] == [50, 50, 30]
 
 
+def test_amharic_sentences_are_split_on_the_ethiopic_full_stop():
+    text = " ".join(["የቡና ተክሎች በከፊል ጥላ ውስጥ በደንብ ያድጋሉ።"] * 6)  # 7 words per sentence
+    chunks = chunk_document([(1, text)], chunk_size=15, overlap=0)
+    assert [words(chunk) for _, _, chunk in chunks] == [14, 14, 14]  # 2 whole sentences each
+    assert all(chunk.endswith("።") for _, _, chunk in chunks)
+
+
 def test_blank_input_produces_no_chunks():
     assert chunk_document([(1, "   "), (2, "")]) == []
 

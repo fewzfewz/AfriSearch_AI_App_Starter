@@ -34,18 +34,30 @@ MANIFEST_PATH = DATA_DIR / "manifest.json"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-EMBEDDER_ID = os.getenv(
-    "AFRISEARCH_EMBEDDER",
-    "sentence-transformers/all-MiniLM-L6-v2",
-)
+# Multilingual (94 languages incl. Amharic, Swahili, Somali, Hausa, Afaan Oromo);
+# "sentence-transformers/all-MiniLM-L6-v2" is a smaller English-focused option.
+DEFAULT_EMBEDDER = "intfloat/multilingual-e5-small"
+# Per-model search settings, matched by model-id prefix. E5 models are trained
+# with "query: "/"passage: " prefixes and score unrelated text much higher than
+# MiniLM, so each needs its own relevance cutoff. 0.75 was tuned for
+# multilingual-e5-small with evaluation/run_eval.py: cross-language questions often
+# score 0.75-0.80, so a higher cutoff drops relevant passages.
+EMBEDDER_SETTINGS = {
+    "intfloat/multilingual-e5-": {"query_prefix": "query: ", "passage_prefix": "passage: ", "min_score": 0.75},
+    "intfloat/e5-": {"query_prefix": "query: ", "passage_prefix": "passage: ", "min_score": 0.75},
+}
+DEFAULT_SETTINGS = {"query_prefix": "", "passage_prefix": "", "min_score": 0.2}
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".txt"}
-# Passages scoring below this cosine similarity are treated as irrelevant.
-MIN_SCORE = float(os.getenv("AFRISEARCH_MIN_SCORE", "0.2"))
 CHUNK_SIZE = 180  # target words per chunk
 CHUNK_OVERLAP = 35  # words of whole sentences repeated from the previous chunk
-# Stored on each chunk; documents indexed with other settings are re-embedded.
-INDEX_VERSION = f"sentences-{CHUNK_SIZE}-{CHUNK_OVERLAP}|{EMBEDDER_ID}"
+# Set by set_embedder(): the search model, its prefixes, and the INDEX_VERSION
+# stored on each chunk (documents indexed with other settings are re-embedded).
+EMBEDDER_ID = DEFAULT_EMBEDDER
+QUERY_PREFIX = PASSAGE_PREFIX = ""
+INDEX_VERSION = ""
+# Passages scoring below this cosine similarity are treated as irrelevant.
+MIN_SCORE = 0.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("afrisearch")
@@ -108,6 +120,27 @@ def get_embedder() -> SentenceTransformer:
     return embedder
 
 
+def set_embedder(model_id: str) -> None:
+    """Choose the search model; the next indexing run re-embeds documents if it changed."""
+    global EMBEDDER_ID, QUERY_PREFIX, PASSAGE_PREFIX, MIN_SCORE, INDEX_VERSION, embedder
+    settings = next(
+        (values for start, values in EMBEDDER_SETTINGS.items() if model_id.startswith(start)),
+        DEFAULT_SETTINGS,
+    )
+    with model_lock:
+        EMBEDDER_ID = model_id
+        QUERY_PREFIX = os.getenv("AFRISEARCH_QUERY_PREFIX", settings["query_prefix"])
+        PASSAGE_PREFIX = os.getenv("AFRISEARCH_PASSAGE_PREFIX", settings["passage_prefix"])
+        MIN_SCORE = float(os.getenv("AFRISEARCH_MIN_SCORE", settings["min_score"]))
+        INDEX_VERSION = f"sentences-{CHUNK_SIZE}-{CHUNK_OVERLAP}|{EMBEDDER_ID}"
+        if PASSAGE_PREFIX:
+            INDEX_VERSION += f"|{PASSAGE_PREFIX}"
+        embedder = None
+
+
+set_embedder(os.getenv("AFRISEARCH_EMBEDDER", DEFAULT_EMBEDDER))
+
+
 def load_index_from_disk() -> None:
     global chunks, chunk_embeddings
     if INDEX_PATH.exists() and EMBEDDINGS_PATH.exists():
@@ -132,7 +165,8 @@ def persist_index() -> None:
         np.save(EMBEDDINGS_PATH, chunk_embeddings)
 
 
-SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+# Latin punctuation plus the Ethiopic full stop (።) and question mark (፧).
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?።፧])\s+")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -295,7 +329,7 @@ def _rebuild_index(full: bool) -> dict[str, Any]:
 
     if new_chunks:
         new_embeddings = get_embedder().encode(
-            [item["text"] for item in new_chunks],
+            [PASSAGE_PREFIX + item["text"] for item in new_chunks],
             convert_to_numpy=True,
             normalize_embeddings=True,
             show_progress_bar=False,
@@ -360,15 +394,22 @@ def remove_document(source_id: str) -> int:
         return removed
 
 
-def retrieve(question: str, top_k: int = 4, min_score: float = MIN_SCORE) -> list[dict[str, Any]]:
+def retrieve(question: str, top_k: int = 4, min_score: float | None = None) -> list[dict[str, Any]]:
+    if min_score is None:
+        min_score = MIN_SCORE
     with index_lock:
         if not chunks or chunk_embeddings is None:
             return []
-        current_chunks = list(chunks)
-        current_embeddings = chunk_embeddings.copy()
+        # Only search chunks embedded with the current search model; vectors from
+        # another model are not comparable even when they have the same size.
+        current = [i for i, item in enumerate(chunks) if item.get("index_version") == INDEX_VERSION]
+        if not current:
+            return []
+        current_chunks = [chunks[i] for i in current]
+        current_embeddings = chunk_embeddings[current]
 
     vector = get_embedder().encode(
-        question,
+        QUERY_PREFIX + question,
         convert_to_numpy=True,
         normalize_embeddings=True,
         show_progress_bar=False,
@@ -466,7 +507,7 @@ def list_providers():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "indexed_chunks": len(chunks)}
+    return {"status": "ok", "indexed_chunks": len(chunks), "embedder": EMBEDDER_ID}
 
 
 @app.post("/documents/upload")
@@ -534,10 +575,16 @@ def index_documents(full: bool = False):
 @app.get("/documents")
 def list_documents():
     unique = {}
+    stale = set()
     for item in chunks:
         unique[item["source_id"]] = item["source_name"]
+        if item.get("index_version") != INDEX_VERSION:
+            stale.add(item["source_id"])
     return {"documents": [{"source_id": key, "source_name": name} for key, name in unique.items()],
-            "indexed_chunks": len(chunks)}
+            "indexed_chunks": len(chunks),
+            # Documents indexed with another search model or chunking; re-index to search them.
+            "stale_documents": len(stale),
+            "embedder": EMBEDDER_ID}
 
 
 @app.delete("/documents/{source_id}")
@@ -554,6 +601,12 @@ def delete_document(source_id: str):
 def ask(request: AskRequest):
     if not chunks or chunk_embeddings is None:
         raise HTTPException(status_code=400, detail="No documents indexed yet. Upload files and call /documents/index.")
+    if not any(item.get("index_version") == INDEX_VERSION for item in chunks):
+        raise HTTPException(
+            status_code=409,
+            detail="The search model or chunk settings changed. Re-index the documents "
+                   "(Upload and index, or POST /documents/index) before asking.",
+        )
     sources = retrieve(request.question, request.top_k)
     answer = None
     removed_citations: list[str] = []

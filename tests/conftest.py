@@ -21,10 +21,12 @@ class FakeEmbedder:
 
     def __init__(self) -> None:
         self.batch_sizes: list[int] = []  # one entry per batch (indexing) call
+        self.texts: list[str] = []  # every text embedded, in order
 
     def encode(self, texts: Any, **kwargs: Any) -> np.ndarray:
         single = isinstance(texts, str)
         batch = [texts] if single else list(texts)
+        self.texts.extend(batch)
         if not single:
             self.batch_sizes.append(len(batch))
         vectors = np.zeros((len(batch), self.dim), dtype=np.float32)
@@ -54,6 +56,8 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "chunk_embeddings", None)
     embedder = FakeEmbedder()
     monkeypatch.setattr(main, "embedder", embedder)
+    # The fake embedder scores on a MiniLM-like scale, whatever the default model is.
+    monkeypatch.setattr(main, "MIN_SCORE", 0.2)
     return main, embedder
 
 

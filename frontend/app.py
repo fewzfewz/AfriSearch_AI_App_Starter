@@ -73,11 +73,13 @@ def render_answer_text(text: str) -> str:
 
 api_ok = True
 providers, default_provider, documents, chunk_count = [], None, [], 0
+stale_documents, search_model = 0, None
 try:
     provider_data = api_get("/providers")
     providers, default_provider = provider_data["providers"], provider_data["default"]
     doc_data = api_get("/documents")
     documents, chunk_count = doc_data["documents"], doc_data["indexed_chunks"]
+    stale_documents, search_model = doc_data.get("stale_documents", 0), doc_data.get("embedder")
 except requests.RequestException:
     api_ok = False
 
@@ -91,6 +93,22 @@ with st.sidebar:
     docs_col, chunks_col = st.columns(2)
     docs_col.metric("Documents", len(documents))
     chunks_col.metric("Chunks", chunk_count)
+    if search_model:
+        st.caption(f":material/travel_explore: Search model: `{search_model}`")
+    if stale_documents:
+        st.warning(
+            f"{stale_documents} document(s) were indexed with a different search model or settings "
+            "and are left out of search until they are re-indexed."
+        )
+        if st.button("Re-index now", icon=":material/refresh:", width="stretch"):
+            st.session_state.index_report = None
+            try:
+                run_index()
+            except requests.RequestException as exc:
+                st.session_state.index_report = {
+                    "messages": [("error", f"Indexing failed: {error_detail(exc)}")], "failed": [],
+                }
+            st.rerun()
 
     uploads = st.file_uploader(
         "Add PDF or TXT files",
