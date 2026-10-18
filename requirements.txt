@@ -1,0 +1,18 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pypdf>=5.0
+sentence-transformers>=5.2
+transformers>=5.8
+Pillow  # needed by the multimodal processors of Qwen3.8 and Gemma 4
+accelerate>=1.0
+torch
+numpy>=1.26
+streamlit>=1.50
+requests>=2.32
+# Hosted answer models (each is optional; a provider is disabled if its package or key is missing)
+anthropic>=1.0
+openai>=2.0
+google-genai>=1.0
+# Optional: 4-bit loading of local models (AFRISEARCH_LOCAL_QUANTIZE=4bit), NVIDIA GPUs only
+# bitsandbytes>=0.45

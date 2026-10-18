@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+data/uploads/*
+data/index.json
+data/embeddings.npy
+data/manifest.json
+!.gitkeep
+.streamlit/
