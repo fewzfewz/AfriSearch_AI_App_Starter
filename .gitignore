@@ -8,5 +8,5 @@ data/index.json
 data/embeddings.npy
 data/manifest.json
 !.gitkeep
-.streamlit/
+.streamlit/secrets.toml
 evaluation/results/
