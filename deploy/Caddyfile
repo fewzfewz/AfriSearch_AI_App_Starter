@@ -1,0 +1,26 @@
+# HTTPS in front of AfriSearch. Caddy gets and renews the certificate automatically.
+# Set AFRISEARCH_DOMAIN (e.g. search.example.org) and point its DNS at this server.
+{$AFRISEARCH_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# Browsers must use HTTPS for a year (only sent over HTTPS).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# Uploads are up to 15 MB each and 20 per request.
+	request_body {
+		max_size 320MB
+	}
+
+	reverse_proxy afrisearch:8000 {
+		# Answers stream token by token; don't buffer them.
+		flush_interval -1
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

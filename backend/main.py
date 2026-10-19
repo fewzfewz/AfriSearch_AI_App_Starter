@@ -1,24 +1,44 @@
 """The AfriSearch HTTP API (under /api) and the built web app (everything else)."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import os
+import re
 import shutil
+import tempfile
+import threading
 import time
+import urllib.request
+import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from backend import __version__, answers, config, db, extract, jobs, llm, models, store
+from backend import __version__, answers, config, db, extract, jobs, limits, llm, models, store
 from backend.auth import User, current_user
 from backend.text import clean_citations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("afrisearch")
+
+if config.SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=config.SENTRY_DSN,
+        release=f"afrisearch@{__version__}",
+        environment=config.ENVIRONMENT,
+        send_default_pii=False,  # no IPs, cookies or request bodies (questions stay private)
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0")),
+    )
 
 DEFAULT_WORKSPACE_NAME = "My documents"
 
@@ -52,7 +72,7 @@ class AskRequest(BaseModel):
     # Reorder passages with the reranker; defaults to on when one is configured.
     rerank: bool | None = None
     # Only search these documents (source ids from GET /api/documents); all when empty.
-    source_ids: list[str] | None = None
+    source_ids: list[str] | None = Field(default=None, max_length=200)
     # Continue this chat (earlier turns help with follow-up questions) and save the turn.
     chat_id: str | None = None
     # Save the question and answer in a new chat when no chat_id is given.
@@ -67,6 +87,10 @@ class FeedbackRequest(BaseModel):
     comment: str = Field(default="", max_length=1000)
     sources: list[str] = Field(default_factory=list, max_length=8)  # cited document names
     message_id: str | None = None
+
+
+class DeleteAccountRequest(BaseModel):
+    confirm: str = Field(max_length=254)  # the user's email, or DELETE when there is none
 
 
 class NameRequest(BaseModel):
@@ -121,14 +145,20 @@ def import_legacy_data(workspace_id: str) -> None:
     logger.info("Moved documents from %s into workspace %s", config.DATA_DIR, workspace_id)
 
 
+_first_workspace_lock = threading.Lock()
+
+
 def user_workspaces(user: User) -> list[dict[str, Any]]:
     """The user's workspaces; a first one is created for new users."""
     workspaces = db.list_workspaces(user.id)
     if not workspaces:
-        workspace = db.create_workspace(DEFAULT_WORKSPACE_NAME, user.id)
-        if user.id == "local":
-            import_legacy_data(workspace["id"])
-        workspaces = db.list_workspaces(user.id)
+        with _first_workspace_lock:  # two first requests at once must not create two
+            workspaces = db.list_workspaces(user.id)
+            if not workspaces:
+                workspace = db.create_workspace(DEFAULT_WORKSPACE_NAME, user.id)
+                if user.id == "local":
+                    import_legacy_data(workspace["id"])
+                workspaces = db.list_workspaces(user.id)
     return workspaces
 
 
@@ -170,7 +200,24 @@ def api_root():
 
 @api.get("/health")
 def health():
-    return {"status": "ok", "version": __version__, **search_settings()}
+    """For uptime monitors: 200 when the database answers and the data folder is writable, else 503."""
+    problems = []
+    try:
+        with db.connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:
+        problems.append(f"database: {exc}")
+    try:
+        probe = config.DATA_DIR / ".health-check"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError as exc:
+        problems.append(f"data folder: {exc}")
+    body = {"status": "error" if problems else "ok", "version": __version__, **search_settings()}
+    if problems:
+        logger.error("Health check failed: %s", "; ".join(problems))
+        return JSONResponse({**body, "problems": problems}, status_code=503)
+    return body
 
 
 @api.get("/config")
@@ -183,6 +230,12 @@ def public_config():
         "supabase_anon_key": config.SUPABASE_ANON_KEY or None,
         "auth_providers": config.AUTH_PROVIDERS,
         "max_upload_mb": config.MAX_UPLOAD_BYTES // (1024 * 1024),
+        "max_files_per_upload": config.MAX_FILES_PER_UPLOAD,
+        "sentry_dsn": config.SENTRY_DSN_WEB or None,
+        "org_name": config.ORG_NAME or None,
+        "contact_email": config.CONTACT_EMAIL or None,
+        "workspace_quota_mb": round(config.WORKSPACE_QUOTA_BYTES / 1024 / 1024) or None,
+        "environment": config.ENVIRONMENT,
         "file_types": sorted(ext.lstrip(".") for ext in config.ALLOWED_EXTENSIONS),
     }
 
@@ -190,6 +243,61 @@ def public_config():
 @api.get("/me")
 def me(user: User = Depends(current_user)):
     return {"user": {"id": user.id, "email": user.email, "name": user.name}, "workspaces": user_workspaces(user)}
+
+
+@api.get("/me/export")
+def export_my_data(user: User = Depends(current_user)):
+    """A zip of everything stored about the user, plus the documents of workspaces they own."""
+    data = db.user_data(user.id)
+    archive = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr("afrisearch-data.json", json.dumps(data, ensure_ascii=False, indent=2))
+        for workspace in data["workspaces"]:
+            if workspace["role"] != "owner":
+                continue
+            workspace_store = store.get_store(workspace["id"])
+            manifest = workspace_store.load_manifest()
+            folder = re.sub(r"[^\w .-]", "_", workspace["name"]) or workspace["id"]
+            for path in workspace_store.uploaded_files():
+                # Keep the stored name's unique prefix, so two files called report.pdf don't collide.
+                zip_file.write(path, f"documents/{folder}/{path.name[:33]}{store.display_name(path.name, manifest)}")
+    archive.close()
+    return FileResponse(archive.name, filename=f"afrisearch-export-{time.strftime('%Y%m%d')}.zip",
+                        background=BackgroundTask(os.unlink, archive.name))  # removed once sent
+
+
+def delete_auth_account(user_id: str) -> bool:
+    """Delete the Supabase sign-in account too, when the server has the admin key."""
+    if config.AUTH_MODE != "supabase" or not config.SUPABASE_SERVICE_ROLE_KEY:
+        return False
+    request = urllib.request.Request(
+        f"{config.SUPABASE_URL}/auth/v1/admin/users/{user_id}", method="DELETE",
+        headers={"apikey": config.SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15):
+            return True
+    except Exception:
+        logger.exception("Couldn't delete the Supabase account of %s", user_id)
+        return False
+
+
+@api.delete("/me")
+def delete_my_account(body: DeleteAccountRequest, user: User = Depends(current_user)):
+    """Delete the user's workspaces (for everyone in them), chats, ratings and memberships."""
+    if body.confirm.strip().lower() != (user.email or "delete").lower():
+        raise HTTPException(status_code=400, detail=f"Type {user.email or 'DELETE'} to confirm.")
+    for workspace in db.list_workspaces(user.id):
+        if workspace["role"] == "owner":
+            store.get_store(workspace["id"]).delete_all()
+            store.forget_store(workspace["id"])
+            db.delete_workspace(workspace["id"])
+    db.delete_user(user.id)
+    auth_deleted = delete_auth_account(user.id)
+    message = "Your data has been deleted."
+    if config.AUTH_MODE == "supabase" and not auth_deleted:
+        message += " Your sign-in account still exists; contact the administrator to remove it."
+    return {"message": message, "auth_account_deleted": auth_deleted}
 
 
 @api.get("/providers")
@@ -258,11 +366,32 @@ def remove_member(workspace_id: str, member_id: str, user: User = Depends(curren
 
 # --- documents ----------------------------------------------------------------------------
 
+async def read_limited(upload: UploadFile) -> bytes | None:
+    """The upload's content, or None as soon as it passes the size limit (never all of a huge file)."""
+    parts, size = [], 0
+    while chunk := await upload.read(1024 * 1024):
+        size += len(chunk)
+        if size > config.MAX_UPLOAD_BYTES:
+            return None
+        parts.append(chunk)
+    return b"".join(parts)
+
+
 @api.post("/documents/upload")
 async def upload_documents(files: list[UploadFile] = File(...), workspace: Workspace = Depends(current_workspace)):
-    contents = [(upload.filename or "upload.txt", await upload.read()) for upload in files]
-    saved, errors = workspace.store.save_uploads(contents)
-    return {"saved": saved, "errors": errors, "message": "Upload finished. Index the documents to search new files."}
+    if len(files) > config.MAX_FILES_PER_UPLOAD:
+        raise HTTPException(status_code=400, detail=f"Upload at most {config.MAX_FILES_PER_UPLOAD} files at a time.")
+    limits.check(f"upload:{workspace.user.id}", limits.UPLOAD_LIMITS, cost=len(files))
+    contents, errors = [], []
+    for upload in files:
+        content = await read_limited(upload)
+        if content is None:
+            errors.append({"filename": upload.filename or "upload", "error": "File exceeds 15 MB limit."})
+        else:
+            contents.append((upload.filename or "upload.txt", content))
+    saved, rejected = workspace.store.save_uploads(contents)
+    return {"saved": saved, "errors": errors + rejected,
+            "message": "Upload finished. Index the documents to search new files."}
 
 
 @api.post("/documents/index")
@@ -307,6 +436,7 @@ def list_documents(workspace: Workspace = Depends(current_workspace)):
             "stale_documents": stale,
             # Uploaded files that aren't in the index (new, or failed to index).
             "unindexed_files": len(workspace.store.uploaded_files()) - len(documents),
+            "storage": {"used_bytes": workspace.store.bytes_used(), "quota_bytes": config.WORKSPACE_QUOTA_BYTES or None},
             **search_settings()}
 
 
@@ -385,6 +515,7 @@ class PreparedAsk:
 
 
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
+    limits.check(f"ask:{workspace.user.id}", limits.ASK_LIMITS)
     check_index_ready(workspace)
     provider = choose_provider(request)
     if provider and check_available:
@@ -488,7 +619,7 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
         pieces: list[str] = []
         try:
             if not prepared.sources or not prepared.covered:
-                canned = answers.NO_SOURCES_ANSWER if not prepared.sources else answers.NOT_COVERED_ANSWER
+                canned = answers.canned("not_covered" if prepared.sources else "no_sources", request.question)
                 pieces.append(canned)
                 yield event("token", text=canned)
             else:
@@ -555,7 +686,7 @@ def delete_chat(chat_id: str, workspace: Workspace = Depends(current_workspace))
 @api.post("/feedback")
 def add_feedback(feedback: FeedbackRequest, workspace: Workspace = Depends(current_workspace)):
     """Store a rating of an answer (and on the chat message, when message_id is given)."""
-    if feedback.message_id and not db.get_message(feedback.message_id, workspace.id):
+    if feedback.message_id and not db.get_message(feedback.message_id, workspace.id, workspace.user.id):
         raise HTTPException(status_code=404, detail="Message not found.")
     db.add_feedback(workspace.id, workspace.user.id, feedback.model_dump())
     return {"message": "Thanks for the feedback."}
@@ -581,6 +712,49 @@ def insights(workspace: Workspace = Depends(current_workspace)):
 
 
 app.include_router(api)
+
+
+# --- security headers ------------------------------------------------------------------------
+
+def inline_script_hashes() -> list[str]:
+    """CSP hashes of the inline scripts in the built index.html (the dark-mode script)."""
+    index = config.WEB_DIST / "index.html"
+    if not index.is_file():
+        return []
+    scripts = re.findall(r"<script>(.*?)</script>", index.read_text(encoding="utf-8"), flags=re.S)
+    return [f"'sha256-{base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()}'" for s in scripts]
+
+
+def content_security_policy() -> str:
+    connect = " ".join(filter(None, ["'self'", config.SUPABASE_URL]))
+    return "; ".join([
+        "default-src 'self'",
+        f"script-src 'self' {' '.join(inline_script_hashes())}".strip(),
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",  # React style attributes
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https:",  # https: for Google profile pictures
+        f"connect-src {connect}",
+        "object-src 'self' blob:",  # the browser's PDF viewer for "Open document"
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+    ])
+
+
+_csp: list[str] = []
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")  # uploaded text is never run as HTML
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    if not request.url.path.startswith("/api/docs"):  # the interactive API docs load from a CDN
+        if not _csp:
+            _csp.append(content_security_policy())
+        response.headers.setdefault("Content-Security-Policy", _csp[0])
+    return response
 
 
 # --- the web app -----------------------------------------------------------------------------------

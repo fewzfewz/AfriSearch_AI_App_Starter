@@ -197,9 +197,19 @@ export function LibraryPage() {
     if (!ok.length) return;
     setUpload({ names: ok.map((f) => f.name), fraction: 0 });
     try {
-      const result = await uploadFiles(ok, (fraction) => setUpload((u) => u && { ...u, fraction }));
-      setRejected([...clientErrors, ...result.errors]);
-      if (result.saved.length) await startIndexing();
+      // The server takes a limited number of files per request, so send them in batches.
+      const size = config.max_files_per_upload || 20;
+      const errors = [...clientErrors];
+      let saved = 0;
+      for (let start = 0; start < ok.length; start += size) {
+        const batch = ok.slice(start, start + size);
+        const result = await uploadFiles(batch, (fraction) =>
+          setUpload((u) => u && { ...u, fraction: (start + fraction * batch.length) / ok.length }));
+        errors.push(...result.errors);
+        saved += result.saved.length;
+      }
+      setRejected(errors);
+      if (saved) await startIndexing();
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -224,6 +234,15 @@ export function LibraryPage() {
           </div>
         )}
       </div>
+      {data?.storage.quota_bytes && (
+        <div className="mt-4 max-w-md">
+          <div className="flex justify-between text-xs text-ink-500">
+            <span>Storage</span>
+            <span className="tabular-nums">{formatSize(data.storage.used_bytes) || "0 KB"} of {formatSize(data.storage.quota_bytes)}</span>
+          </div>
+          <div className="mt-1"><ProgressBar value={data.storage.used_bytes / data.storage.quota_bytes} /></div>
+        </div>
+      )}
 
       <div className="mt-6 space-y-4">
         <DropZone onFiles={onFiles} accept={config?.file_types ?? []} maxMb={config?.max_upload_mb ?? 15} disabled={Boolean(upload) || Boolean(active)} />

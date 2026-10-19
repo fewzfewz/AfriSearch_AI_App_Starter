@@ -80,7 +80,9 @@ def test_no_relevant_passages(indexed, streaming_model):
     _, calls = streaming_model
     result = events(indexed.post("/ask/stream", json={"question": "Rais wa kwanza wa Tanzania alikuwa nani?"}))
     assert result[0]["sources"] == []
-    assert "do not contain passages" in result[-1]["answer"]
+    from backend import answers
+
+    assert result[-1]["answer"] == answers.CANNED["no_sources"]["sw"]  # the question is in Swahili
     assert calls == []  # the model is not asked
 
 

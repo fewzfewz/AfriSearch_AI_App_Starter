@@ -69,8 +69,9 @@ class Env:
 @pytest.fixture
 def app_env(tmp_path, monkeypatch):
     """The app pointed at an empty temporary data directory, with a fake embedder."""
-    from backend import config, extract, models, store
+    from backend import config, extract, limits, models, store
 
+    limits.reset()  # rate-limit counts never carry over between tests
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "AUTH_MODE", "none")
     monkeypatch.setattr(store, "_stores", {})

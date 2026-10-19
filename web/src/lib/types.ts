@@ -7,7 +7,13 @@ export interface AppConfig {
   supabase_anon_key: string | null;
   auth_providers: string[];
   max_upload_mb: number;
+  max_files_per_upload: number;
   file_types: string[];
+  sentry_dsn: string | null;
+  environment: string;
+  org_name: string | null;
+  contact_email: string | null;
+  workspace_quota_mb: number | null;
 }
 
 export interface User {
@@ -75,6 +81,7 @@ export interface DocumentsResponse {
   indexed_chunks: number;
   stale_documents: number;
   unindexed_files: number;
+  storage: { used_bytes: number; quota_bytes: number | null };
   embedder: string;
   reranker: string | null;
   ocr: OcrStatus;

@@ -55,6 +55,7 @@ export function SignInPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -79,7 +80,11 @@ export function SignInPage() {
         navigate("/app");
       } else if (mode === "signup") {
         const { data, error: failed } = await supabase.auth.signUp({
-          email, password, options: { data: { full_name: name.trim() }, emailRedirectTo: `${window.location.origin}/app` },
+          email, password,
+          options: {
+            data: { full_name: name.trim(), accepted_terms_at: new Date().toISOString() },  // record of consent
+            emailRedirectTo: `${window.location.origin}/app`,
+          },
         });
         if (failed) throw failed;
         if (data.session) navigate("/app");
@@ -151,7 +156,17 @@ export function SignInPage() {
                     {mode === "signup" && <span className="mt-1 block text-xs font-normal text-ink-500">At least 8 characters.</span>}
                   </label>
                 )}
-                <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy} disabled={!supabase}>
+                {mode === "signup" && (
+                  <label className="flex items-start gap-2.5 text-sm text-ink-600 dark:text-ink-400">
+                    <input type="checkbox" required checked={agreed} onChange={(e) => setAgreed(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-ink-300 accent-brand-700" />
+                    <span>
+                      I agree to the <Link to="/terms" target="_blank" className="font-medium text-brand-700 underline dark:text-brand-400">Terms of use</Link> and
+                      the <Link to="/privacy" target="_blank" className="font-medium text-brand-700 underline dark:text-brand-400">Privacy notice</Link>.
+                    </span>
+                  </label>
+                )}
+                <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy} disabled={!supabase || (mode === "signup" && !agreed)}>
                   {mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
                 </Button>
               </form>

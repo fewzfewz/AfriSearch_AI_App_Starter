@@ -203,6 +203,31 @@ def remove_member(workspace_id: str, user_id: str) -> None:
                      (workspace_id, user_id))
 
 
+def user_data(user_id: str) -> dict[str, Any]:
+    """Everything stored about a user, for export: account, memberships, chats with messages, ratings."""
+    with connect() as conn:
+        user = _row(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+        chats = [dict(row) for row in conn.execute(
+            "SELECT c.id, c.title, c.created_at, c.updated_at, w.name AS workspace FROM chats c "
+            "JOIN workspaces w ON w.id = c.workspace_id WHERE c.user_id = ? ORDER BY c.created_at", (user_id,))]
+        feedback = [_row(row, "sources") for row in conn.execute(
+            "SELECT f.rating, f.question, f.answer, f.provider, f.comment, f.sources, f.created_at, w.name AS workspace "
+            "FROM feedback f JOIN workspaces w ON w.id = f.workspace_id WHERE f.user_id = ? ORDER BY f.id", (user_id,))]
+    for chat in chats:
+        chat["messages"] = [{k: m[k] for k in ("role", "content", "data", "rating", "created_at")}
+                            for m in list_messages(chat["id"])]
+    return {"user": user, "workspaces": list_workspaces(user_id), "chats": chats, "feedback": feedback}
+
+
+def delete_user(user_id: str) -> None:
+    """Remove the user's chats, ratings and memberships everywhere, then the user."""
+    with connect() as conn:
+        conn.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))  # messages go with them
+        conn.execute("DELETE FROM feedback WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
 # --- chats and messages -------------------------------------------------------------
 
 def create_chat(workspace_id: str, user_id: str, title: str) -> dict[str, Any]:
@@ -257,11 +282,13 @@ def list_messages(chat_id: str) -> list[dict[str, Any]]:
     return [_row(row, "data") for row in rows]
 
 
-def get_message(message_id: str, workspace_id: str) -> dict[str, Any] | None:
+def get_message(message_id: str, workspace_id: str, user_id: str) -> dict[str, Any] | None:
+    """A message in one of the user's own chats in the workspace."""
     with connect() as conn:
         return _row(conn.execute(
-            "SELECT m.* FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.id = ? AND c.workspace_id = ?",
-            (message_id, workspace_id),
+            "SELECT m.* FROM messages m JOIN chats c ON c.id = m.chat_id "
+            "WHERE m.id = ? AND c.workspace_id = ? AND c.user_id = ?",
+            (message_id, workspace_id, user_id),
         ).fetchone(), "data")
 
 

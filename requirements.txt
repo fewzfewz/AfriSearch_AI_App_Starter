@@ -12,6 +12,7 @@ accelerate>=1.0
 torch
 numpy>=1.26
 PyJWT[crypto]>=2.8  # verifies Supabase sign-in tokens
+sentry-sdk[fastapi]>=2.0  # optional error tracking (SENTRY_DSN)
 # Hosted answer models (each is optional; a provider is disabled if its package or key is missing)
 anthropic>=1.0
 openai>=2.0

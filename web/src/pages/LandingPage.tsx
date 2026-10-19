@@ -219,7 +219,9 @@ export function LandingPage() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-8 text-sm text-ink-500 sm:px-6">
           <Logo className="text-ink-900 dark:text-white" />
           <span>Version {config?.version ?? ""} · MIT license</span>
-          <a href="https://github.com/fewzfewz/AfriSearch_AI_App_Starter" className="ml-auto hover:text-ink-900 dark:hover:text-white">GitHub</a>
+          <Link to="/privacy" className="ml-auto hover:text-ink-900 dark:hover:text-white">Privacy</Link>
+          <Link to="/terms" className="hover:text-ink-900 dark:hover:text-white">Terms</Link>
+          <a href="https://github.com/fewzfewz/AfriSearch_AI_App_Starter" className="hover:text-ink-900 dark:hover:text-white">GitHub</a>
           <a href="/api/docs" className="hover:text-ink-900 dark:hover:text-white">API</a>
         </div>
       </footer>

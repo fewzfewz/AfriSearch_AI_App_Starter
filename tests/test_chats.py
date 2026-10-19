@@ -191,3 +191,19 @@ def test_insights(indexed, fake_model):
     assert body["top_documents"] == [{"source_name": "guide.txt", "answers": 1}]
     assert len(body["per_day"]) == 14 and body["per_day"][-1]["questions"] == 1
     assert body["feedback"]["total"] == 0
+
+
+@pytest.mark.parametrize("question, language", [
+    ("How often should panels be cleaned?", "en"),
+    ("የደረቀ ቡና እርጥበት ስንት በመቶ መሆን አለበት?", "am"),
+    ("Mahindi yanapaswa kukaushwa hadi unyevu wa asilimia ngapi?", "sw"),
+    ("Simu yangu ikiibiwa, nifanye nini?", "sw"),
+    ("Qu'est-ce que la garantie?", "en"),  # unknown languages fall back to English
+])
+def test_question_language(question, language):
+    assert answers.question_language(question) == language
+
+
+def test_no_passages_message_uses_the_question_language(indexed, fake_model):
+    body = indexed.post("/ask", json={"question": "Rais wa kwanza wa Tanzania alikuwa nani?"}).json()
+    assert body["answer"] == answers.CANNED["no_sources"]["sw"]

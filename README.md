@@ -118,10 +118,12 @@ Open http://localhost:5173. Vite forwards `/api` to the API on port 8000 and rel
 
 ## Running in production
 
+**[docs/deploy.md](docs/deploy.md) is the step-by-step guide** for one cloud server: HTTPS with Caddy, Supabase, backups, Sentry and uptime monitoring. In short:
+
 1. **Turn on sign-in** ([below](#accounts-and-workspaces)).
 2. **Build and run** with Docker: copy `.env.example` to `.env`, fill it in, and run `docker compose up -d --build`. The image includes Tesseract (English, Amharic, Swahili), CPU PyTorch and the built web app; data and models live in the `afrisearch-data` and `afrisearch-models` volumes.
 3. **Put HTTPS in front.** Keep the container on `127.0.0.1` and use a reverse proxy, for example [Caddy](https://caddyserver.com) with `reverse_proxy 127.0.0.1:8000`, which gets a certificate automatically. Only then set `AFRISEARCH_BIND=0.0.0.0` if the proxy runs elsewhere.
-4. **Back up** the `afrisearch-data` volume (documents, indexes, chats, accounts' workspaces).
+4. **Back up** nightly with `python -m backend.backup create` (a consistent snapshot, safe while the app runs) and copy the archives off the server; restore with `python -m backend.backup restore <archive>`.
 
 The image runs on CPU. The GPU answer models need an NVIDIA GPU and the NVIDIA container toolkit, which this compose file doesn't set up.
 
@@ -268,6 +270,13 @@ If your documents are full of codes the search model confuses, measure it on you
 | `AFRISEARCH_LOCAL_QUANTIZE` | off | `4bit` loads Qwen 3.8 and Gemma 4 in 4-bit |
 | `AFRISEARCH_LOCAL_MAX_NEW_TOKENS` | `512` | Answer length cap for local GPU models |
 | `AFRISEARCH_ALLOW_CPU` | off | `1` lets GPU models run on CPU |
+| `AFRISEARCH_WORKSPACE_QUOTA_MB` | `500` | Storage per workspace (0 = no limit) |
+| `AFRISEARCH_ASK_PER_MINUTE`, `AFRISEARCH_ASK_PER_DAY` | `20`, `500` | Questions per user (0 = no limit) |
+| `AFRISEARCH_UPLOADS_PER_HOUR` | `200` | Uploaded files per user (0 = no limit) |
+| `AFRISEARCH_ORG_NAME`, `AFRISEARCH_CONTACT_EMAIL` | – | Shown on the privacy notice and terms pages |
+| `SUPABASE_SERVICE_ROLE_KEY` | – | Secret; lets "Delete my account" remove the Supabase account too |
+| `SENTRY_DSN`, `SENTRY_DSN_WEB` | – | Error reports to Sentry from the API and the web app |
+| `AFRISEARCH_ENV` | `development` | Environment name in error reports |
 | `AFRISEARCH_BIND` | `127.0.0.1` | Docker only: address the container's port is published on |
 | `HF_HOME` | `~/.cache/hf_models` | Where model weights are stored |
 
@@ -281,6 +290,8 @@ All endpoints are under `/api`; interactive docs at `/api/docs`. With sign-in on
 |---|---|---|
 | `GET` | `/api/config` | Public: sign-in mode and Supabase settings for the web app, upload limits |
 | `GET` | `/api/me` | The signed-in user and their workspaces |
+| `GET` | `/api/me/export` | A zip of the user's data and the documents of workspaces they own |
+| `DELETE` | `/api/me` | Delete the account: `{"confirm": "<email>"}` (or `DELETE` in local mode) |
 | `GET`, `POST` | `/api/workspaces` | List or create workspaces |
 | `PATCH`, `DELETE` | `/api/workspaces/{id}` | Rename or delete (owner) |
 | `GET`, `POST` | `/api/workspaces/{id}/members` | List members, or add one by `{"email"}` (owner) |
@@ -299,7 +310,7 @@ All endpoints are under `/api`; interactive docs at `/api/docs`. With sign-in on
 | `GET`, `PATCH`, `DELETE` | `/api/chats/{id}` | A chat with its messages; rename; delete |
 | `POST`, `GET` | `/api/feedback` | Rate an answer (`message_id` links it to a chat message); totals and recent ratings |
 | `GET` | `/api/insights` | Usage, questions per day, most-cited documents, ratings |
-| `GET` | `/api/health` | Status, version, search model, reranker, OCR |
+| `GET` | `/api/health` | 200 when the database and data folder work, 503 otherwise; version, models, OCR |
 
 ## Testing
 
@@ -311,6 +322,8 @@ cd web && npm run typecheck
 
 | File | Covers |
 |---|---|
+| `tests/test_security.py` | Upload content checks and size limits, rate limits, storage quota, security headers, health check |
+| `tests/test_backup.py` | Backup and restore round trip, retention, refusing to overwrite, archive path tricks |
 | `tests/test_accounts.py` | Supabase tokens (shared secret and published keys; expired, forged, wrong audience), users kept apart, workspaces, members and roles |
 | `tests/test_chats.py` | Saved chats, follow-ups, ratings on messages, background jobs and progress, "not covered" rule, answer language, file download, insights |
 | `tests/test_documents.py` | Upload, duplicates, incremental and full indexing, failed files, delete, restart |
@@ -383,7 +396,7 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 - Answers and citations can be wrong, especially from the small local model. Every answer links to its sources.
 - With a cloud model, the passages needed for an answer are sent to that provider; use a local model for sensitive documents.
 - Data is stored in SQLite and files on one server. That suits a pilot; many concurrent users need PostgreSQL and object storage (see the roadmap).
-- There is no billing, usage quota or rate limiting yet; don't open sign-ups to the public without them.
+- Usage limits (questions, uploads, storage) are counted per server process. There is no billing yet.
 
 ## Project
 

@@ -1,9 +1,9 @@
 // Workspace, team, appearance and account settings.
-import { LogOut, Monitor, Moon, Sun, Trash2, UserPlus } from "lucide-react";
+import { Download, LogOut, Monitor, Moon, Sun, Trash2, UserPlus } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Badge, Button, Card, ConfirmDialog, cx, useToast } from "../components/ui";
-import { api } from "../lib/api";
+import { api, downloadFile } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
@@ -38,6 +38,22 @@ export function SettingsPage() {
   const [inviting, setInviting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmName, setConfirmName] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [confirmAccount, setConfirmAccount] = useState("");
+
+  const exportData = async () => {
+    setExporting(true);
+    try {
+      await downloadFile("/me/export", "afrisearch-my-data.zip");
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setExporting(false);
+    }
+  };
+  const accountConfirmWord = user?.email || "DELETE";
+  const ownedWorkspaces = workspaces.filter((w) => w.role === "owner");
   const members = useApi<{ members: Member[] }>(current ? `/workspaces/${current.id}/members` : null);
   const system = useApi<DocumentsResponse>("/documents");
   const multiUser = config?.auth === "supabase";
@@ -146,6 +162,16 @@ export function SettingsPage() {
             </div>
             {multiUser && <Button icon={<LogOut className="h-4 w-4" />} onClick={async () => { await signOut(); navigate("/"); }}>Sign out</Button>}
           </Card>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button icon={<Download className="h-4 w-4" />} loading={exporting} onClick={exportData}>Download my data</Button>
+            <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950"
+              icon={<Trash2 className="h-4 w-4" />} onClick={() => setDeletingAccount(true)}>
+              {multiUser ? "Delete my account" : "Delete all my data"}
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-ink-500">
+            The download has your chats, ratings and the documents of workspaces you own. See the <Link to="/privacy" className="underline">privacy notice</Link>.
+          </p>
         </Section>
 
         <Section title="About" description="What this server uses to read and search your documents.">
@@ -158,7 +184,11 @@ export function SettingsPage() {
               {system.data ? (system.data.ocr.available ? `On · ${system.data.ocr.languages.join(", ")}` : `Off · ${system.data.ocr.reason}`) : "…"}
             </dd></div>
           </dl>
-          <a href="/api/docs" target="_blank" rel="noreferrer" className="mt-4 inline-block text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">API documentation →</a>
+          <p className="mt-4 flex flex-wrap gap-4 text-sm font-medium text-brand-700 dark:text-brand-400">
+            <a href="/api/docs" target="_blank" rel="noreferrer" className="hover:underline">API documentation →</a>
+            <Link to="/privacy" className="hover:underline">Privacy notice</Link>
+            <Link to="/terms" className="hover:underline">Terms of use</Link>
+          </p>
         </Section>
 
         {isOwner && (
@@ -176,6 +206,29 @@ export function SettingsPage() {
           </Section>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deletingAccount}
+        title={multiUser ? "Delete your account?" : "Delete all your data?"}
+        confirmLabel="Delete forever"
+        onClose={() => { setDeletingAccount(false); setConfirmAccount(""); }}
+        confirmDisabled={confirmAccount.trim().toLowerCase() !== accountConfirmWord.toLowerCase()}
+        onConfirm={async () => {
+          try {
+            const result = await api<{ message: string }>("/me", { method: "DELETE", json: { confirm: confirmAccount.trim() } });
+            toast(result.message);
+            if (multiUser) await signOut();
+            window.location.href = "/";
+          } catch (e) {
+            toast((e as Error).message, "error");
+          }
+        }}
+      >
+        <p>This deletes your chats and ratings everywhere, and these workspaces with all their documents, <strong>for everyone in them</strong>:</p>
+        <ul className="mt-2 list-disc pl-5">{ownedWorkspaces.map((w) => <li key={w.id}>{w.name}</li>)}</ul>
+        <p className="mt-3">It can't be undone. Download your data first if you need it. Type <strong className="text-ink-900 dark:text-white">{accountConfirmWord}</strong> to confirm.</p>
+        <input value={confirmAccount} onChange={(e) => setConfirmAccount(e.target.value)} aria-label="Confirmation" className={cx(inputClass, "mt-3")} />
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deleteOpen}

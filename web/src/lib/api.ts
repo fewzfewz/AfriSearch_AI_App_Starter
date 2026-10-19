@@ -98,6 +98,16 @@ export async function uploadFiles(files: File[], onProgress: (fraction: number) 
   });
 }
 
+/** Download a file from the API (with the sign-in token) under the given name. */
+export async function downloadFile(path: string, filename: string) {
+  const response = await fetch(`/api${path}`, { headers: await authHeaders() });
+  if (!response.ok) throw await errorFrom(response);
+  const url = URL.createObjectURL(await response.blob());
+  const link = Object.assign(document.createElement("a"), { href: url, download: filename });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /** Open an uploaded document in a new tab, at a page for PDFs. */
 export async function openDocument(sourceId: string, page?: number | null) {
   // Open the tab right away (inside the click), or popup blockers stop it.

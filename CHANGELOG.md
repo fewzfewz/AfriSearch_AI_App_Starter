@@ -2,6 +2,26 @@
 
 All notable changes to AfriSearch are listed here. The project uses [semantic versioning](https://semver.org/): until 1.0, minor versions may change the API or the index format.
 
+## [Unreleased]
+
+Ready for a pilot: security, limits, backups, legal pages and account controls.
+
+### Added
+- Per-user rate limits for questions and uploads, and a storage quota per workspace (`AFRISEARCH_*` settings).
+- Upload checks by content; uploads stop being read at 15 MB; at most 20 files per request (the web app sends batches).
+- Security headers: Content-Security-Policy, nosniff, no framing.
+- Backups: `python -m backend.backup create|restore`, consistent while the app runs, with retention.
+- Health check reports database and disk problems with 503, for uptime monitors.
+- Optional Sentry error reporting for the API and the web app, without personal data.
+- Privacy notice and terms pages, consent at sign-up, links in the footer and Settings.
+- Download my data (zip) and delete my account in Settings; with `SUPABASE_SERVICE_ROLE_KEY`, the sign-in account is deleted too.
+- "No passages" and "not covered" messages in Amharic and Swahili when the question is.
+- Deployment guide (`docs/deploy.md`), Caddyfile and production compose file.
+
+### Fixed
+- Ratings could be attached to another member's message in a shared workspace.
+- Two simultaneous first requests could create two default workspaces.
+
 ## [0.2.0] — 2026-10-19
 
 Towards a hosted product: accounts, workspaces and a new web app.

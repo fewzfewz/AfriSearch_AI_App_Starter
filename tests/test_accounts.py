@@ -125,3 +125,44 @@ def test_members_share_a_workspace(client, supabase):
 
     client.delete(f"/workspaces/{workspace}/members/guest", headers=guest)  # guest leaves
     assert client.get("/documents", headers=in_shared).status_code == 404
+
+
+def test_export_contains_my_data_and_documents(client, app_env, fake_model):
+    import io
+    import json
+    import zipfile
+
+    from conftest import upload as upload_files
+
+    upload_files(client, ("guide.txt", SOLAR_GUIDE))
+    client.post("/documents/index")
+    client.post("/ask", json={"question": "How often should panels be cleaned?", "save": True})
+    response = client.get("/me/export")
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    data = json.loads(archive.read("afrisearch-data.json"))
+    assert data["chats"][0]["messages"][0]["content"] == "How often should panels be cleaned?"
+    assert [w["name"] for w in data["workspaces"]] == ["My documents"]
+    documents = [n for n in archive.namelist() if n.startswith("documents/My documents/")]
+    assert len(documents) == 1 and documents[0].endswith("_guide.txt")
+    assert archive.read(documents[0]) == SOLAR_GUIDE
+
+
+def test_deleting_an_account_removes_its_data(client, supabase, fake_model):
+    owner, guest = as_user(sub="owner", email="owner@example.org"), as_user(sub="guest", email="guest@example.org")
+    owned = client.get("/me", headers=owner).json()["workspaces"][0]["id"]
+    guest_space = client.get("/me", headers=guest).json()["workspaces"][0]["id"]
+    client.post(f"/workspaces/{guest_space}/members", headers=guest, json={"email": "owner@example.org"})
+    client.post("/documents/upload", headers=owner, files=[("files", ("g.txt", SOLAR_GUIDE, "text/plain"))])
+
+    wrong = client.request("DELETE", "/me", headers=owner, json={"confirm": "someone@else.org"})
+    assert wrong.status_code == 400
+    deleted = client.request("DELETE", "/me", headers=owner, json={"confirm": "OWNER@example.org"})
+    assert deleted.status_code == 200
+    assert "sign-in account still exists" in deleted.json()["message"]  # no admin key configured
+
+    from backend import config, db, store as store_module
+    assert not store_module.workspace_dir(owned).exists()
+    assert db.get_workspace(owned, "owner") is None
+    assert [m["id"] for m in client.get(f"/workspaces/{guest_space}/members", headers=guest).json()["members"]] == ["guest"]
+    assert client.get("/me", headers=owner).json()["workspaces"][0]["id"] != owned  # signs in fresh

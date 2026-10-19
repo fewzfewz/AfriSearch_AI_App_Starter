@@ -1,6 +1,7 @@
 """Turning retrieved passages into a cited answer."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from backend import llm, models
@@ -12,6 +13,37 @@ NO_SOURCES_ANSWER = (
 NOT_COVERED_ANSWER = (
     "The documents don't seem to cover this question. The closest passages are listed below in case they help."
 )
+# The same two messages in the languages we can recognise reliably.
+# TODO(review): have native speakers check the Amharic and Swahili wording.
+CANNED = {
+    "no_sources": {
+        "en": NO_SOURCES_ANSWER,
+        "am": "በተጫኑት ሰነዶች ውስጥ ይህን ጥያቄ ለመመለስ በቂ ተዛማጅ ክፍሎች አልተገኙም።",
+        "sw": "Nyaraka zilizopo hazina vifungu vinavyohusiana vya kutosha kujibu swali hili.",
+    },
+    "not_covered": {
+        "en": NOT_COVERED_ANSWER,
+        "am": "ሰነዶችዎ ይህን ጥያቄ የሚመልሱ አይመስሉም። በጣም ቅርብ የሆኑት ክፍሎች ከታች ተዘርዝረዋል።",
+        "sw": "Inaonekana nyaraka zako hazijibu swali hili. Vifungu vinavyokaribiana zaidi viko hapa chini, huenda vikasaidia.",
+    },
+}
+# Frequent Swahili question and function words; two or more mark a Swahili question.
+SWAHILI_WORDS = {"je", "ni", "nini", "gani", "ngapi", "vipi", "nani", "wapi", "lini", "kwa", "wa", "ya", "za",
+                 "kuna", "hii", "hiyo", "katika", "kama", "na", "kwenye", "mimi", "yangu", "nifanye"}
+
+
+def question_language(question: str) -> str:
+    """'am', 'sw' or 'en' (everything else), for the canned messages."""
+    if is_ethiopic(question):
+        return "am"
+    words = re.findall(r"[a-z]+", question.lower())
+    return "sw" if sum(word in SWAHILI_WORDS for word in words) >= 2 else "en"
+
+
+def canned(kind: str, question: str) -> str:
+    return CANNED[kind][question_language(question)]
+
+
 SYSTEM_PROMPT = "Be accurate, concise, and grounded in provided evidence."
 # How much of the conversation a follow-up question sees.
 HISTORY_TURNS = 2
@@ -83,9 +115,9 @@ def generate_answer(
     question: str, sources: list[dict[str, Any]], provider: str, history: list[dict[str, str]] | None = None,
 ) -> str:
     if not sources:
-        return NO_SOURCES_ANSWER
+        return canned("no_sources", question)
     if not is_covered(sources):
-        return NOT_COVERED_ANSWER
+        return canned("not_covered", question)
     return llm.generate(provider, SYSTEM_PROMPT, build_prompt(question, sources, history))
 
 

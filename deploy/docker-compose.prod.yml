@@ -1,0 +1,38 @@
+# Production: AfriSearch behind Caddy (HTTPS). Run from the project root:
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d --build
+# Only Caddy is reachable from the internet; AfriSearch listens inside Docker only.
+services:
+  afrisearch:
+    # Its port stays published on 127.0.0.1 only (see docker-compose.yml), so it's
+    # reachable from this server but not from the internet.
+    environment:
+      AFRISEARCH_ENV: production
+      AFRISEARCH_ORG_NAME: ${AFRISEARCH_ORG_NAME:-}
+      AFRISEARCH_CONTACT_EMAIL: ${AFRISEARCH_CONTACT_EMAIL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_DSN_WEB: ${SENTRY_DSN_WEB:-}
+      AFRISEARCH_WORKSPACE_QUOTA_MB: ${AFRISEARCH_WORKSPACE_QUOTA_MB:-500}
+      AFRISEARCH_ASK_PER_MINUTE: ${AFRISEARCH_ASK_PER_MINUTE:-20}
+      AFRISEARCH_ASK_PER_DAY: ${AFRISEARCH_ASK_PER_DAY:-500}
+    volumes:
+      - ./backups:/app/backups   # python -m backend.backup create writes here
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    depends_on: [afrisearch]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      AFRISEARCH_DOMAIN: ${AFRISEARCH_DOMAIN:?Set AFRISEARCH_DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

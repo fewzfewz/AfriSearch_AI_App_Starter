@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import re
@@ -25,6 +26,26 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 
 def file_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def content_problem(filename: str, content: bytes) -> str | None:
+    """Why the file's content doesn't match its type, or None if it looks right."""
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf" and b"%PDF-" not in content[:1024]:
+        return "This doesn't look like a PDF file."
+    if suffix == ".txt" and b"\x00" in content[:65536]:
+        return "This doesn't look like a text file."
+    if suffix in config.IMAGE_EXTENSIONS:
+        from PIL import Image
+
+        try:
+            with Image.open(io.BytesIO(content)) as image:
+                image.verify()
+        except Image.DecompressionBombError:
+            return "This image has too many pixels to read safely."
+        except Exception:
+            return "This doesn't look like a valid image."
+    return None
 
 
 def create_chunks(
@@ -111,6 +132,9 @@ class DocumentStore:
             if path.is_file() and path.suffix.lower() in config.ALLOWED_EXTENSIONS
         ]
 
+    def bytes_used(self) -> int:
+        return sum(path.stat().st_size for path in self.uploaded_files())
+
     def file_path(self, source_id: str) -> Path:
         """The stored upload for a source id; raises FileNotFoundError for anything else."""
         path = self.upload_dir / source_id
@@ -125,6 +149,7 @@ class DocumentStore:
         """Store (filename, content) pairs; returns (saved, errors). Duplicates are rejected."""
         saved, errors = [], []
         manifest = self.load_manifest()
+        used = self.bytes_used()
         # Hashes of files already stored, so the same document isn't indexed twice.
         known_hashes = {
             file_sha256(path.read_bytes()): manifest.get(path.name, path.name) for path in self.uploaded_files()
@@ -141,6 +166,16 @@ class DocumentStore:
             if len(content) > config.MAX_UPLOAD_BYTES:
                 errors.append({"filename": original_name, "error": "File exceeds 15 MB limit."})
                 continue
+            problem = content_problem(original_name, content)
+            if problem:
+                errors.append({"filename": original_name, "error": problem})
+                continue
+            if config.WORKSPACE_QUOTA_BYTES and used + len(content) > config.WORKSPACE_QUOTA_BYTES:
+                quota_mb = config.WORKSPACE_QUOTA_BYTES / 1024 / 1024
+                errors.append({"filename": original_name, "error": (
+                    f"The workspace's storage is full ({used / 1024 / 1024:.0f} of {quota_mb:.0f} MB used). "
+                    "Delete documents you no longer need, or ask about a larger plan.")})
+                continue
             digest = file_sha256(content)
             if digest in known_hashes:
                 errors.append({"filename": original_name,
@@ -150,6 +185,7 @@ class DocumentStore:
             # Unique stored names prevent accidental overwrite when filenames collide.
             stored_name = f"{uuid.uuid4().hex}_{re.sub(r'[^A-Za-z0-9._-]', '_', original_name)}"
             (self.upload_dir / stored_name).write_bytes(content)
+            used += len(content)
             manifest[stored_name] = original_name
             saved.append({"filename": original_name, "stored_name": stored_name, "bytes": len(content)})
         if saved:

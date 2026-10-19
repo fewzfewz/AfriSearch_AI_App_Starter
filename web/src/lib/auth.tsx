@@ -29,7 +29,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     api<AppConfig>("/config")
-      .then(setConfig)
+      .then((loaded) => {
+        setConfig(loaded);
+        // Error reporting is only downloaded when the server has a Sentry DSN for the web app.
+        if (loaded.sentry_dsn) {
+          import("@sentry/browser").then((Sentry) =>
+            Sentry.init({ dsn: loaded.sentry_dsn!, environment: loaded.environment, release: `afrisearch@${loaded.version}`, sendDefaultPii: false }),
+          );
+        }
+      })
       .catch((error: Error) => setConfigError(error.message));
   }, []);
 
