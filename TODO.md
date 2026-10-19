@@ -26,7 +26,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [x] **Account deletion and data export** (M): a user can delete their account and download their documents and chats.
 
 ### Answer quality
-- [ ] **Pick the default answer model** (S): run `python evaluation/run_eval.py --providers qwen-small claude chatgpt gemini` and compare correctness per language. Qwen 2.5 0.5B gets Amharic answers wrong and often skips citations.
+- [ ] 👤 **Pick the default answer model** (S): Qwen 2.5 0.5B is measured: 14/39 correct (14/25 English, 0/14 in African languages), so it can't be the default for real users. Get an API key and run `python evaluation/run_eval.py --providers claude chatgpt gemini` (about $0.50 per model) to choose between them.
 - [x] **"Not covered" message in the question's language** (S) — Amharic and Swahili; 👤 have native speakers check the wording: it's English-only today. *(backend/answers.py → `NOT_COVERED_ANSWER`)*
 
 ---

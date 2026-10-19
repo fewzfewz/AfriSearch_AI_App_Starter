@@ -168,6 +168,7 @@ AfriSearch verifies each request's access token with the project's published sig
 | `gpt-oss` | `openai/gpt-oss-20b` | Local GPU | CUDA GPU | `AFRISEARCH_GPT_OSS_MODEL` |
 | `qwen-small` | `Qwen/Qwen2.5-0.5B-Instruct` | Local CPU or GPU | nothing extra | `AFRISEARCH_SMALL_MODEL` |
 
+- **Measured quality:** on the evaluation set (`evaluation/run_eval.py --providers qwen-small`, October 2026) Qwen 2.5 0.5B answered **14 of 39** questions correctly: 14 of 25 in English and **none of the 14** in Amharic, Swahili, Somali, Afaan Oromo or Hausa, even though search found the right document for 38 of them. It's fine for trying AfriSearch offline, not for real users; use a cloud model or a GPU model for them, and measure it the same way.
 - **Which model is pre-selected:** `AFRISEARCH_DEFAULT_PROVIDER` (for example `qwen-small`). Otherwise the first available model in the table order is used.
 - **Claude refusals:** requests to Claude include Anthropic's server-side refusal fallback. If a safety filter declines a question, the API answers with Anthropic's recommended fallback model instead of returning an error.
 - **Privacy:** when you use Claude, ChatGPT or Gemini, the retrieved passages from your documents are sent to that company.
