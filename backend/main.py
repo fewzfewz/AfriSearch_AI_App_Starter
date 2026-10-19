@@ -204,8 +204,9 @@ def persist_index() -> None:
         np.save(EMBEDDINGS_PATH, chunk_embeddings)
 
 
-# Latin punctuation plus the Ethiopic full stop (።) and question mark (፧).
-SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?።፧])\s+")
+# Latin punctuation plus the Ethiopic full stop (።) and question mark (፧). Two
+# Ethiopic wordspaces (፡፡) look identical to ። and are common in typed text and OCR output.
+SENTENCE_BOUNDARY = re.compile(r"(?:(?<=[.!?።፧])|(?<=፡፡))\s+")
 
 
 def split_sentences(text: str) -> list[str]:

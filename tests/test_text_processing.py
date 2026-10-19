@@ -1,5 +1,5 @@
 """Chunking, citation cleanup and page formatting (pure functions)."""
-from backend.main import chunk_document, clean_citations, format_pages
+from backend.main import chunk_document, clean_citations, format_pages, split_sentences
 
 
 def words(text: str) -> int:
@@ -39,6 +39,11 @@ def test_amharic_sentences_are_split_on_the_ethiopic_full_stop():
     chunks = chunk_document([(1, text)], chunk_size=15, overlap=0)
     assert [words(chunk) for _, _, chunk in chunks] == [14, 14, 14]  # 2 whole sentences each
     assert all(chunk.endswith("።") for _, _, chunk in chunks)
+
+
+def test_double_wordspace_also_ends_amharic_sentences():
+    # OCR and many keyboards write the full stop as two wordspaces (፡፡).
+    assert split_sentences("ጥላ ያስፈልጋል፡፡ ፍሬ ይልቀሙ። ያድርቁ") == ["ጥላ ያስፈልጋል፡፡", "ፍሬ ይልቀሙ።", "ያድርቁ"]
 
 
 def test_blank_input_produces_no_chunks():
