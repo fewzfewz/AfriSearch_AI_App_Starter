@@ -11,8 +11,7 @@ Pillow  # needed by the multimodal processors of Qwen3.8 and Gemma 4
 accelerate>=1.0
 torch
 numpy>=1.26
-streamlit>=1.50
-requests>=2.32
+PyJWT[crypto]>=2.8  # verifies Supabase sign-in tokens
 # Hosted answer models (each is optional; a provider is disabled if its package or key is missing)
 anthropic>=1.0
 openai>=2.0

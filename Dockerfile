@@ -1,4 +1,12 @@
-# One image for both the API and the UI (docker-compose.yml picks the command).
+# Stage 1: build the web app.
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: the API, which also serves the built web app.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -20,14 +28,15 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY backend backend
-COPY frontend frontend
-COPY .streamlit .streamlit
+COPY --from=web /web/dist web/dist
 
-# Run as a normal user; documents and model weights live in volumes.
+# Run as a normal user; data (accounts, documents, indexes) and model weights live in volumes.
 RUN useradd --create-home --uid 1000 afrisearch \
-    && mkdir -p /app/data/uploads /models \
+    && mkdir -p /app/data /models \
     && chown -R afrisearch /app/data /models
 USER afrisearch
 
-EXPOSE 8000 8501
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

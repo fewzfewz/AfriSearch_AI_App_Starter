@@ -278,6 +278,9 @@ def _load_local(key: str):
     if not torch.cuda.is_available():
         # Most laptop CPUs have no fast bfloat16 math; float32 is several times faster.
         kwargs["dtype"] = torch.float32
+        # device_map="auto" spills layers to disk when RAM is short, which makes
+        # generation crawl (minutes per answer); on CPU, load straight into memory.
+        del kwargs["device_map"]
     if LOCAL_QUANTIZE == "4bit" and spec.quantizable:
         from transformers import BitsAndBytesConfig
 

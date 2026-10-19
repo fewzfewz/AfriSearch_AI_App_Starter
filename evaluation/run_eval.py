@@ -28,8 +28,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend import llm  # noqa: E402
-from backend import main  # noqa: E402  (also sets HF_HOME)
+from backend import answers, config, llm, models  # noqa: E402  (config also sets HF_HOME)
+from backend.store import DocumentStore  # noqa: E402
+from backend.text import clean_citations  # noqa: E402
 from evaluation.scoring import grade, retrieval_rank  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -38,21 +39,21 @@ MODES = ("semantic", "rerank")
 
 def set_mode(mode: str, reranker_id: str | None) -> None:
     wanted = reranker_id if mode == "rerank" else ""
-    if main.RERANKER_ID != wanted:
-        main.set_reranker(wanted)
+    if models.RERANKER_ID != wanted:
+        models.set_reranker(wanted)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--corpus", type=Path, default=HERE / "corpus", help="folder of PDF/TXT documents")
     parser.add_argument("--questions", type=Path, default=HERE / "questions.json")
-    parser.add_argument("--embedders", nargs="+", default=[main.EMBEDDER_ID],
+    parser.add_argument("--embedders", nargs="+", default=[models.EMBEDDER_ID],
                         help="search models to compare (answers use the first one)")
     parser.add_argument("--modes", nargs="+", choices=MODES,
-                        default=["rerank" if main.RERANKER_ID else "semantic"],
+                        default=["rerank" if models.RERANKER_ID else "semantic"],
                         help="search modes to compare (answers use the first one); "
                              "rerank = semantic search reordered by the --reranker model")
-    parser.add_argument("--reranker", default=main.RERANKER_ID or main.DEFAULT_RERANKER,
+    parser.add_argument("--reranker", default=models.RERANKER_ID or models.DEFAULT_RERANKER,
                         help="reranking model for the 'rerank' mode (default: AFRISEARCH_RERANKER)")
     parser.add_argument("--providers", nargs="*", default=[], help="answer models to score, e.g. qwen-small claude")
     parser.add_argument("--retrieval-only", action="store_true", help="score search only; no answer models")
@@ -62,25 +63,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_index(corpus: Path, workdir: Path) -> None:
-    """Index the corpus into a temporary data directory with the real pipeline."""
-    main.DATA_DIR = workdir
-    main.UPLOAD_DIR = workdir / "uploads"
-    main.INDEX_PATH = workdir / "index.json"
-    main.EMBEDDINGS_PATH = workdir / "embeddings.npy"
-    main.MANIFEST_PATH = workdir / "manifest.json"
-    main.UPLOAD_DIR.mkdir(parents=True)
-    main.chunks, main.chunk_embeddings = [], None
-
-    files = sorted(p for p in corpus.iterdir() if p.suffix.lower() in main.ALLOWED_EXTENSIONS)
+def build_index(corpus: Path, workdir: Path) -> DocumentStore:
+    """Index the corpus into a temporary workspace with the real pipeline."""
+    index = DocumentStore(workdir)
+    files = sorted(p for p in corpus.iterdir() if p.suffix.lower() in config.ALLOWED_EXTENSIONS)
     if not files:
-        sys.exit(f"No PDF or TXT files in {corpus}")
+        sys.exit(f"No PDF, TXT or image files in {corpus}")
     for path in files:
-        shutil.copy(path, main.UPLOAD_DIR / path.name)
-    result = main.rebuild_index(full=True)
-    print(f"Indexed {len(files)} documents into {result['indexed_chunks']} chunks with {main.EMBEDDER_ID}")
+        shutil.copy(path, index.upload_dir / path.name)
+    result = index.rebuild(full=True)
+    print(f"Indexed {len(files)} documents into {result['indexed_chunks']} chunks with {models.EMBEDDER_ID}")
     for failed in result["failed"]:
         print(f"  ! not indexed: {failed['filename']}: {failed['error']}")
+    return index
 
 
 def percent(part: int, whole: int) -> str:
@@ -120,10 +115,10 @@ def score_retrieval(questions: list[dict[str, Any]], retrieved: dict[str, list],
         counts[0] += ranks[q["id"]] is not None
         counts[1] += 1
     return {
-        "embedder": main.EMBEDDER_ID,
+        "embedder": models.EMBEDDER_ID,
         "mode": mode,
-        "reranker": main.RERANKER_ID or None,
-        "min_score": main.MIN_SCORE,
+        "reranker": models.RERANKER_ID or None,
+        "min_score": models.MIN_SCORE,
         "answerable": len(answerable),
         "hit_at_1": sum(rank == 1 for rank in ranks.values()),
         "hit_at_k": sum(rank is not None for rank in ranks.values()),
@@ -144,8 +139,8 @@ def score_provider(provider_id: str, questions: list[dict[str, Any]], retrieved:
         started = time.monotonic()
         error = None
         try:
-            answer = main.generate_answer(question["question"], sources, provider_id)
-            answer, _ = main.clean_citations(answer, len(sources))
+            answer = answers.generate_answer(question["question"], sources, provider_id)
+            answer, _ = clean_citations(answer, len(sources))
         except Exception as exc:  # keep going; a failed call counts as wrong
             answer, error = "", f"{type(exc).__name__}: {exc}"
         seconds = time.monotonic() - started
@@ -233,13 +228,13 @@ def main_cli() -> None:
 
     retrievals, answer_results = [], []
     for position, embedder_id in enumerate(args.embedders):
-        main.set_embedder(embedder_id)
+        models.set_embedder(embedder_id)
         with tempfile.TemporaryDirectory(prefix="afrisearch-eval-") as workdir:
-            build_index(args.corpus, Path(workdir))
+            index = build_index(args.corpus, Path(workdir))
             for mode_number, mode in enumerate(args.modes):
                 set_mode(mode, args.reranker)
-                retrieved = {q["id"]: main.retrieve(q["question"], args.top_k) for q in questions}
-                raw = {q["id"]: main.retrieve(q["question"], args.top_k, min_score=-1.0) for q in questions}
+                retrieved = {q["id"]: index.retrieve(q["question"], args.top_k) for q in questions}
+                raw = {q["id"]: index.retrieve(q["question"], args.top_k, min_score=-1.0) for q in questions}
                 retrievals.append(score_retrieval(questions, retrieved, raw, mode))
                 if mode_number == 0:
                     answer_sources = retrieved

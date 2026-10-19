@@ -8,3 +8,5 @@ data
 evaluation/results
 .env
 .streamlit/secrets.toml
+web/node_modules
+web/dist

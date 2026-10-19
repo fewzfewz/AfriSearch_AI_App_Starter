@@ -2,9 +2,9 @@
 
 [![tests](https://github.com/fewzfewz/AfriSearch_AI_App_Starter/actions/workflows/tests.yml/badge.svg)](https://github.com/fewzfewz/AfriSearch_AI_App_Starter/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![version 0.1.0](https://img.shields.io/badge/version-0.1.0-orange.svg)
+![version 0.2.0](https://img.shields.io/badge/version-0.2.0-orange.svg)
 
-Ask questions about your own documents, in English, Amharic, Swahili and 90+ other languages. Upload PDFs, text files or photos of documents, and AfriSearch finds the most relevant passages and writes an answer that cites them.
+Ask questions about your own documents in English, Amharic, Swahili and 90+ other languages. Upload PDFs, text files or photos of pages; AfriSearch finds the relevant passages and writes an answer that cites them, with the original page one click away.
 
 **Quick start with Docker**
 
@@ -12,106 +12,81 @@ Ask questions about your own documents, in English, Amharic, Swahili and 90+ oth
 docker compose up --build        # or: docker-compose up --build
 ```
 
-Then open http://127.0.0.1:8501. The first start downloads about 1 GB of models. To use Claude, ChatGPT or Gemini, set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` in your shell or a `.env` file first. See [Running with Docker](#running-with-docker), or [Setup](#setup) to run without Docker.
+Then open http://127.0.0.1:8000. The first start downloads about 1 GB of models. Without further setup it runs in **local mode**: no sign-in, one user, only reachable from this computer. To offer it to other people, turn on sign-in first ([Accounts and workspaces](#accounts-and-workspaces)).
 
-> **Status:** v0.1, for local use by one person or a trusted team. It has no logins yet, so don't expose it to the internet ([SECURITY.md](SECURITY.md)). The plan to a hosted release is in [ROADMAP.md](ROADMAP.md).
+> **Status:** v0.2. Accounts, workspaces and the web app are in place for a hosted pilot; HTTPS, backups and billing are still to do. See [ROADMAP.md](ROADMAP.md) and [SECURITY.md](SECURITY.md).
 
-**Features**
-- Upload PDF and TXT documents, and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP); exact duplicates are rejected
-- OCR for scanned PDFs and photos with Tesseract, in English, Amharic and Swahili by default; PDFs that mix typed and scanned pages work too
-- Extract text with page numbers, split it into sentence-aware chunks that can span pages, and embed them
-- Index only new files (a full rebuild is optional), and delete documents from the UI
-- Multilingual semantic search (94 languages, including Amharic, Swahili, Somali, Hausa and Afaan Oromo), so a question in one language can find a document in another
-- A reranker that rereads the best matches and puts the most relevant passage first (can be switched off per question)
-- A relevance cutoff, so clearly unrelated passages are never passed to the model
-- Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question; local models show the answer as it is written
-- Citations like `[S1]` link to the source passages; citations that don't match a source are removed
-- Files that can't be indexed (for example a scan when OCR isn't installed) are reported in the UI, with the reason
-- **Ask** tab: choose which documents to search, write an answer or just find passages, citations that jump to their source, 👍/👎 ratings with comments, and Markdown export of an answer or the whole session
-- **Library** tab: every document with its type, pages, passages, OCR status, size and date; read its passages or delete it
-- **Insights** tab: library and session statistics, and the ratings everyone has given
-- Light and dark mode, and a layout that works on phones
-- The index stays on disk between restarts
+## Features
+
+**Documents**
+- Upload PDF, TXT and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP) by drag and drop; exact duplicates are rejected
+- OCR for scanned PDFs and photos with Tesseract (English, Amharic and Swahili by default), page by page, so mixed PDFs work
+- Indexing runs in the background with live progress (file, page, stage); you can keep working meanwhile
+- Library with type, pages, passages, OCR status, size and date; read a document's passages, open the original, delete
+
+**Asking**
+- Chat-style questions with saved conversation history; short follow-up questions use the earlier context
+- Multilingual search (94 languages, across languages) with a multilingual reranker
+- Answers stream as they're written (local models), in the question's language, with `[S1]` citations that open the source passage; the original PDF opens at the cited page
+- Questions the documents don't cover are answered with "not covered" and the closest passages, instead of a guess
+- Answers from **Claude, ChatGPT, Gemini** or a **local model**; or **find passages only**, with nothing sent to an AI model
+- Limit a question to chosen documents; copy, rate (👍/👎 with a comment) or download any answer as Markdown
+
+**Teams and product**
+- Sign-in with Supabase (email and password, Google, password reset, email confirmation)
+- Workspaces: separate documents, chats and feedback per team or project; owners add members by email
+- Insights: questions per day, most-cited documents, answers not covered, ratings and comments
+- Landing page, light and dark mode, phone-friendly layout
 
 ## Architecture
 
 ```
-frontend/app.py   Streamlit UI: upload, index status, model picker, streamed answers, sources
-.streamlit/       UI theme (light and dark) and upload size limit
-backend/main.py   FastAPI: ingestion, OCR, chunking, embeddings, retrieval, reranking, /ask
-backend/llm.py    Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
-tests/            pytest suite (no downloads, keys or GPU needed)
-evaluation/       question set with known answers + scoring script
-data/             uploads/, index.json, embeddings.npy, manifest.json, feedback.jsonl (created at runtime)
-Dockerfile, docker-compose.yml   container image (with Tesseract) and the two services
-.github/workflows/               tests and Docker build on every push
+web/                React + TypeScript + Tailwind app (Vite): landing page, sign-in, chat, library, insights, settings
+backend/main.py     FastAPI routes under /api; also serves the built web app
+backend/auth.py     Sign-in: verifies Supabase tokens, or a single local user when sign-in is off
+backend/db.py       SQLite: users, workspaces, members, chats, messages, feedback, indexing jobs
+backend/store.py    Per-workspace uploads and search index (chunks + embeddings)
+backend/jobs.py     Background indexing with progress
+backend/extract.py  PDF/TXT/image text extraction and OCR
+backend/models.py   Search model and reranker
+backend/answers.py  Prompts, "not covered" rule, follow-up handling
+backend/llm.py      Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
+backend/text.py     Sentence splitting, chunking, citation cleanup
+tests/              pytest suite (no downloads, keys or GPU needed)
+evaluation/         Question set with known answers + scoring script
+data/               afrisearch.db and workspaces/<id>/ (created at runtime)
 ```
-
-- **Search model:** `intfloat/multilingual-e5-small`, with the `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` reranker (see [Search](#search))
-- **Answer models:** see [Answer models](#answer-models)
-- **Storage:** local files under `data/` (a starter implementation, not production storage)
 
 ## Requirements
 
-- Python 3.10+
-- Internet access on the first run, to install packages and download model weights
-- About 1 GB of free disk space for the search model and reranker (about 470 MB each), plus more for any local answer model
-- For **Claude / ChatGPT / Gemini**: an API key from the provider
-- For **Qwen 3.8, Gemma 4 and gpt-oss**: an NVIDIA GPU (see [GPU memory](#local-models))
-- **Qwen 2.5 0.5B** runs on an ordinary laptop CPU, with no key or GPU
-- For **scanned PDFs and photos**: the Tesseract OCR program (see [setup step 3](#3-optional-install-tesseract-for-scanned-pdfs-and-photos))
+- Python 3.10+ and Node.js 20+ (Node only to build or develop the web app; Docker does both for you)
+- About 1 GB of disk for the search model and reranker, plus more for any local answer model
+- Optional: **Tesseract** for scans and photos ([install](#2-optional-install-tesseract-for-scans-and-photos)); API keys for Claude / ChatGPT / Gemini; an NVIDIA GPU for the larger local models; a free **Supabase** project for sign-in
 
-## Setup
+## Development setup
 
 Open a terminal in the project folder.
 
-### 1. Create and activate a virtual environment
-
-Linux/macOS:
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-Windows:
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-Or use an existing conda environment that already has PyTorch, for example:
-```bash
-conda activate pytorch_env
-```
-
-### 2. Install dependencies
+### 1. Python environment and packages
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # skip if you have an NVIDIA GPU
+pip install -r requirements-dev.txt
 ```
 
-On a machine without an NVIDIA GPU, the CPU build of PyTorch is a much smaller download:
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-```
+An existing conda environment with PyTorch works too (`conda activate pytorch_env`).
 
-### 3. (Optional) Install Tesseract for scanned PDFs and photos
-
-Typed PDFs and text files work without it. To read scans and photos, install Tesseract and the languages you need:
+### 2. (Optional) Install Tesseract for scans and photos
 
 ```bash
-# Debian, Ubuntu, Kali
-sudo apt install tesseract-ocr tesseract-ocr-amh tesseract-ocr-swa
-# macOS (Homebrew); tesseract-lang contains all languages
-brew install tesseract tesseract-lang
+sudo apt install tesseract-ocr tesseract-ocr-amh tesseract-ocr-swa   # Debian, Ubuntu, Kali
+brew install tesseract tesseract-lang                                 # macOS
 ```
 
-On Windows, use the installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki), tick the extra languages you need, and add the install folder to `PATH`. Restart the API afterwards. The sidebar shows whether OCR is on and which languages it uses.
+On Windows use the [UB Mannheim installer](https://github.com/UB-Mannheim/tesseract/wiki) and add it to `PATH`. On Kali, if `http.kali.org` times out, switch `/etc/apt/sources.list` to `http://kali.download/kali`.
 
-### 4. (Optional) Add API keys
-
-Set the keys for the hosted models you want to use in the terminal that will run the API:
+### 3. (Optional) API keys
 
 ```bash
 export ANTHROPIC_API_KEY=...   # Claude
@@ -119,54 +94,65 @@ export OPENAI_API_KEY=...      # ChatGPT
 export GEMINI_API_KEY=...      # Gemini
 ```
 
-Windows PowerShell: `$env:ANTHROPIC_API_KEY="..."`. Without keys you can still use the local models.
+Without keys, the small local model (Qwen 2.5 0.5B) answers on your CPU.
 
-### 5. Start the API
+### 4. Start the API
 
 ```bash
 uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-API docs: http://127.0.0.1:8000/docs
+API docs: http://127.0.0.1:8000/api/docs
 
-### 6. Start the UI in another terminal
-
-Activate the same virtual environment, then:
-```bash
-streamlit run frontend/app.py
-```
-
-The UI opens at http://localhost:8501.
-
-## Running with Docker
+### 5. Start the web app (in another terminal)
 
 ```bash
-docker compose up --build        # older installs: docker-compose up --build
+cd web
+npm install
+npm run dev
 ```
 
-- **UI:** http://127.0.0.1:8501 · **API docs:** http://127.0.0.1:8000/docs
-- The image includes Tesseract with English, Amharic and Swahili, and the CPU build of PyTorch.
-- Documents, the index and feedback are kept in the `afrisearch-data` volume, and downloaded models in `afrisearch-models`, so they survive restarts and upgrades. `docker compose down -v` deletes them.
-- API keys and settings (`AFRISEARCH_DEFAULT_PROVIDER`, `AFRISEARCH_RERANKER`, `AFRISEARCH_OCR_LANGS`) are read from your shell or a `.env` file next to `docker-compose.yml`.
-- Both services listen on `127.0.0.1` only. Don't change that until logins exist ([SECURITY.md](SECURITY.md)).
-- The image runs on CPU. The GPU answer models (Qwen 3.8, Gemma 4, gpt-oss) need an NVIDIA GPU and the NVIDIA container toolkit, which this compose file doesn't set up.
+Open http://localhost:5173. Vite forwards `/api` to the API on port 8000 and reloads the page as you edit. To serve the app from the API instead (as in production), run `npm run build`; the API then serves `web/dist` at http://127.0.0.1:8000.
+
+**Upgrading from 0.1:** on first start, documents in the old `data/uploads` folder and ratings in `data/feedback.jsonl` move into the local user's first workspace automatically.
+
+## Running in production
+
+1. **Turn on sign-in** ([below](#accounts-and-workspaces)).
+2. **Build and run** with Docker: copy `.env.example` to `.env`, fill it in, and run `docker compose up -d --build`. The image includes Tesseract (English, Amharic, Swahili), CPU PyTorch and the built web app; data and models live in the `afrisearch-data` and `afrisearch-models` volumes.
+3. **Put HTTPS in front.** Keep the container on `127.0.0.1` and use a reverse proxy, for example [Caddy](https://caddyserver.com) with `reverse_proxy 127.0.0.1:8000`, which gets a certificate automatically. Only then set `AFRISEARCH_BIND=0.0.0.0` if the proxy runs elsewhere.
+4. **Back up** the `afrisearch-data` volume (documents, indexes, chats, accounts' workspaces).
+
+The image runs on CPU. The GPU answer models need an NVIDIA GPU and the NVIDIA container toolkit, which this compose file doesn't set up.
+
+## Accounts and workspaces
+
+| Mode | `AFRISEARCH_AUTH` | Who can use it |
+|---|---|---|
+| Local | `none` (default) | One local user, no sign-in. For your own computer only. |
+| Accounts | `supabase` | Anyone who signs up; each user has their own workspaces. |
+
+**Setting up Supabase sign-in** (free tier is enough to start):
+1. Create a project at [supabase.com](https://supabase.com).
+2. In **Project Settings → API**, copy the **Project URL** and the **anon public** key into `SUPABASE_URL` and `SUPABASE_ANON_KEY`, and set `AFRISEARCH_AUTH=supabase`.
+3. In **Authentication → URL Configuration**, set the **Site URL** to your app's address (for example `https://search.example.org`) and add `https://search.example.org/app` and `/signin` as redirect URLs.
+4. Optional: enable **Google** under **Authentication → Providers** and set `AFRISEARCH_AUTH_PROVIDERS=google` to show the button.
+5. Restart the API. The sign-in page now offers sign-up, sign-in and password reset; email confirmation follows your Supabase settings.
+
+AfriSearch verifies each request's access token with the project's published signing keys. Projects still on the legacy shared JWT secret set `SUPABASE_JWT_SECRET` instead. Only the token check depends on Supabase, so another provider that issues standard JWTs (Clerk, Auth0) could be added in `backend/auth.py`.
+
+**Workspaces.** Every user starts with a workspace called *My documents* and can create more (one per team, project or client) from the workspace switcher. Each workspace has its own documents, search index, chats, feedback and insights. Its owner can add people who have signed up (**Settings → Members**), rename it, or delete it; members can search, ask, upload and leave. Chats are private to the person who asked.
 
 ## Using the app
 
-The sidebar is for adding documents; the main area has three tabs.
-
-1. **Add documents:** in the sidebar, choose PDF, TXT or image files and click **Upload and index**. Only new files are processed; scanned pages are read with OCR, which takes a few seconds per page. Files that couldn't be indexed are listed with the reason.
-2. **Ask tab:**
-   - The line above the question shows which model will answer and where it runs (Cloud API, Local · GPU or Local · CPU).
-   - **Settings** changes the mode (**Write an answer**, or **Find passages only**: instant, and nothing is sent to a cloud API), the answer model, the number of passages and reranking. **Other models** there explains why the rest are unavailable.
-   - **Search in** limits the search to the documents you pick; leave it empty to search everything.
-   - Type a question in any language and press **Ask AfriSearch** or **Ctrl+Enter**. With a local model, the answer appears as it is written.
-3. **Check the answer:** click a citation such as **S1** to jump to its source card, which shows the file, pages, relevance, reranker score and whether the text came from OCR. Always check important claims against the sources.
-4. **Rate and save:** **Rate this answer** records 👍 or 👎 with an optional comment. **Download** saves the question, answer and sources as Markdown, and **Download session** saves every question from this session.
-5. **Library tab:** all documents in a table. Filter by name, select a row to read its passages, or delete it (with confirmation).
-6. **Insights tab:** document and passage counts, this session's questions and average answer time, and the ratings from everyone using this server.
-
-**Advanced → Rebuild full index** processes every document again. You rarely need it: when the search model or chunk settings change, the sidebar shows which documents are out of date, and **Re-index now** (or **Upload and index**) updates just those.
+- **Library:** drag files into the upload area. Upload progress, then indexing progress ("Reading scan.pdf · page 3 of 12"), show live. Files that couldn't be read are listed with the reason. Click a document to read its passages; the ⋯ menu opens the original or deletes it.
+- **Ask:** type a question in any language and press Enter (Shift+Enter for a new line). Below the box:
+  - **Model**: which model answers and where it runs (Cloud, On this computer, Local GPU), or **Find passages only**. Unavailable models are listed with the reason.
+  - **All documents**: tick documents to search only those.
+  - **Options**: passages to use (1–8) and reranking.
+- **Answers:** click a citation such as **S1** to show its passage, **Open document at page N** to see the original, and the icons below the answer to copy it, download it as Markdown or rate it. The stop button cancels an answer that is being written.
+- **Chats** are saved in the sidebar (rename or delete with ⋯). **New chat** starts fresh.
+- **Insights** and **Settings** cover usage, ratings, members, appearance and system details.
 
 ## Answer models
 
@@ -226,15 +212,30 @@ Measured with `python evaluation/run_eval.py --retrieval-only --embedders senten
 The default search model is [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (MIT licence, about 470 MB, downloads on first use). It understands 94 languages and matches questions to documents across languages, for example an English question to a Swahili guide.
 
 - **Relevance cutoff:** E5 models score even unrelated text fairly high (about 0.7–0.83 here), so the cutoff is 0.75 for them instead of 0.2. Cross-language questions often score 0.75–0.80, and a higher cutoff started dropping correct passages. The trade-off is that only some off-topic questions are filtered out; the answer model is told to say when the documents don't cover a question. To tune the cutoff for your own documents, run the evaluation with your own questions and look at the *suggested cutoff* lines.
-- **Switching models:** set `AFRISEARCH_EMBEDDER`, for example `sentence-transformers/all-MiniLM-L6-v2` for a smaller, faster English-only setup. Documents indexed with another model are left out of search, because their vectors can't be compared, and the sidebar shows **Re-index now** to update them.
+- **Switching models:** set `AFRISEARCH_EMBEDDER`, for example `sentence-transformers/all-MiniLM-L6-v2` for a smaller, faster English-only setup. Documents indexed with another model are left out of search, because their vectors can't be compared, and the Library shows **Re-index now** to update them.
 
 ### Reranker
 
 The default reranker is [`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`](https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) (Apache 2.0, about 470 MB, multilingual). It downloads the first time a question is reranked.
 
 - **Speed:** on a 4-core laptop CPU the first reranked question takes about 10 s while the model loads; after that reranking adds about 0.5 s per question.
-- **What it changes:** only the order of the passages. The relevance cutoff still uses the search model's score, and **relevance** in the UI still shows that score. Reranker scores didn't separate answerable from off-topic questions reliably enough to use as a cutoff.
-- **Turning it off:** use the **Rerank passages** toggle per question, send `"rerank": false` to `/ask`, or set `AFRISEARCH_RERANKER=off` to never load it. `AFRISEARCH_RERANKER` also takes another cross-encoder model id.
+- **What it changes:** the order of the passages, and whether the answer model is asked at all (see *Questions your documents don't answer* below). The relevance cutoff still uses the search model's score, and the **% match** on source cards still shows that score.
+- **Turning it off:** switch off **Rerank passages** under **Options** below the question box, send `"rerank": false` to `/api/ask`, or set `AFRISEARCH_RERANKER=off` to never load it. `AFRISEARCH_RERANKER` also takes another cross-encoder model id.
+
+### Questions your documents don't answer
+
+When reranking is on and even the best passage scores below `AFRISEARCH_MIN_RERANK_SCORE` (default −5), AfriSearch doesn't ask the answer model. It says the documents don't seem to cover the question and shows the closest passages instead. Small models in particular tend to invent answers when given unrelated passages.
+
+On the evaluation set this stopped 3 of the 6 off-topic questions (2 were already stopped by the relevance cutoff), and no answerable question: the lowest-scoring answerable one scored −3.2. A threshold of −4 stopped 5 of 6 but sits closer to real answers, so measure on your own documents before raising it.
+
+### Only close passages reach the model
+
+Small models mix up facts when unrelated passages sit next to the right one: in testing, Qwen 2.5 0.5B answered "once a month" (the rainy-season figure) instead of "every two weeks" when a Swahili poultry guide and an Amharic coffee guide were among its passages. So when reranking is on, passages scoring more than `AFRISEARCH_RERANK_GAP` (default 5) below the best one are dropped, from the prompt and from the sources shown. On the evaluation set any gap from 3 to 8 kept the right document for all 39 questions; 5 removed 45% of the passages.
+
+### Answer language and follow-up questions
+
+- Answers are written in the language of the question. Amharic questions (Ge'ez script) get an explicit instruction to answer in Amharic, because small models otherwise drift into English.
+- In a chat, short follow-up questions ("and the batteries?") are searched together with the previous question, and the model sees the last two answers as context.
 
 ### Tried and not adopted: keyword (hybrid) search
 
@@ -245,64 +246,83 @@ Merging a keyword ranking (BM25) with the semantic ranking is a common way to ca
 
 If your documents are full of codes the search model confuses, measure it on your own questions before adding it.
 
+
 ## Configuration reference
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AFRISEARCH_API_URL` | `http://127.0.0.1:8000` | Where the UI finds the API |
+| `AFRISEARCH_AUTH` | `none` | `none` (local, one user) or `supabase` (accounts) |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | – | Supabase project URL and public anon key |
+| `SUPABASE_JWT_SECRET` | – | Only for projects on the legacy shared secret |
+| `AFRISEARCH_AUTH_PROVIDERS` | – | Extra sign-in buttons, e.g. `google` |
+| `AFRISEARCH_DATA_DIR` | `./data` | Database, uploads and indexes |
+| `AFRISEARCH_WEB_DIST` | `./web/dist` | Built web app served at `/` |
 | `AFRISEARCH_DEFAULT_PROVIDER` | first available | Pre-selected answer model |
 | `AFRISEARCH_EMBEDDER` | `intfloat/multilingual-e5-small` | Search model; documents must be re-indexed after changing it |
 | `AFRISEARCH_MIN_SCORE` | `0.75` for E5 models, `0.2` otherwise | Passages less similar than this are ignored |
 | `AFRISEARCH_QUERY_PREFIX` / `AFRISEARCH_PASSAGE_PREFIX` | `query: ` / `passage: ` for E5 models | Text added before questions / passages when embedding |
 | `AFRISEARCH_RERANKER` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Reranking model; `off` disables reranking |
-| `AFRISEARCH_OCR_LANGS` | `eng+amh+swa` | Tesseract languages for OCR, joined with `+` (e.g. `eng+amh+swa+som`); ones not installed are skipped |
+| `AFRISEARCH_MIN_RERANK_SCORE` | `-5` | Below this best reranker score, a question counts as not covered |
+| `AFRISEARCH_RERANK_GAP` | `5` | Passages scoring this far below the best reranked one aren't given to the model |
+| `AFRISEARCH_OCR_LANGS` | `eng+amh+swa` | Tesseract languages, joined with `+`; ones not installed are skipped |
 | `AFRISEARCH_LOCAL_QUANTIZE` | off | `4bit` loads Qwen 3.8 and Gemma 4 in 4-bit |
 | `AFRISEARCH_LOCAL_MAX_NEW_TOKENS` | `512` | Answer length cap for local GPU models |
 | `AFRISEARCH_ALLOW_CPU` | off | `1` lets GPU models run on CPU |
+| `AFRISEARCH_BIND` | `127.0.0.1` | Docker only: address the container's port is published on |
 | `HF_HOME` | `~/.cache/hf_models` | Where model weights are stored |
 
 The model-name variables are listed in [Answer models](#answer-models).
 
 ## API
 
+All endpoints are under `/api`; interactive docs at `/api/docs`. With sign-in on, send `Authorization: Bearer <Supabase access token>`. Workspace endpoints act on the workspace in the `X-Workspace-Id` header, or the user's first workspace.
+
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/documents/upload` | Upload PDF, TXT or image files (multipart field `files`) |
-| `POST` | `/documents/index` | Index new uploads; `?full=true` rebuilds everything. Returns failed files |
-| `GET` | `/documents` | Indexed documents (type, pages, passages, OCR, size, upload time), chunk count, documents needing re-indexing, search model, reranker and OCR status |
-| `GET` | `/documents/{source_id}/passages` | The indexed passages of one document, with pages and OCR flags |
-| `DELETE` | `/documents/{source_id}` | Delete a document and its chunks |
-| `GET` | `/providers` | Answer models, whether each is available, and why not |
-| `POST` | `/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer", "source_ids"}` → answer, sources (with `score` and `rerank_score`), whether they were reranked, removed citations. `source_ids` limits the search to those documents |
-| `POST` | `/ask/stream` | Same request as `/ask`; streams newline-delimited JSON events: `sources`, then `token` pieces of the answer, then `done` (cleaned answer) or `error` |
-| `POST` | `/feedback` | `{"rating": "up" or "down", "question", "answer", "provider", "comment", "sources"}`; appended to `data/feedback.jsonl` |
-| `GET` | `/feedback` | Rating totals and the most recent ratings (`?limit=20`) |
-| `GET` | `/` | Name and version |
-| `GET` | `/health` | Status, chunk count, search model, reranker and OCR status |
+| `GET` | `/api/config` | Public: sign-in mode and Supabase settings for the web app, upload limits |
+| `GET` | `/api/me` | The signed-in user and their workspaces |
+| `GET`, `POST` | `/api/workspaces` | List or create workspaces |
+| `PATCH`, `DELETE` | `/api/workspaces/{id}` | Rename or delete (owner) |
+| `GET`, `POST` | `/api/workspaces/{id}/members` | List members, or add one by `{"email"}` (owner) |
+| `DELETE` | `/api/workspaces/{id}/members/{user_id}` | Remove a member (owner), or leave |
+| `POST` | `/api/documents/upload` | Upload files (multipart field `files`) |
+| `POST` | `/api/documents/index` | Index new uploads; `?wait=false` runs it as a background job, `?full=true` re-reads everything |
+| `GET` | `/api/jobs`, `/api/jobs/{id}` | Indexing jobs and their progress (`?active=true` for running ones) |
+| `GET` | `/api/documents` | Documents with details, counts, search model, reranker, OCR status |
+| `GET` | `/api/documents/{id}/passages` | A document's indexed passages |
+| `GET` | `/api/documents/{id}/file` | The original uploaded file |
+| `DELETE` | `/api/documents/{id}` | Delete a document |
+| `GET` | `/api/providers` | Answer models, whether each is available, and why not |
+| `POST` | `/api/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer", "source_ids", "chat_id", "save"}` → answer, sources, `covered`, chat and message ids |
+| `POST` | `/api/ask/stream` | Same request; newline-delimited JSON events: `sources`, `token` pieces, then `done` or `error` |
+| `GET`, `POST` | `/api/chats` | The user's chats in the workspace, or create one |
+| `GET`, `PATCH`, `DELETE` | `/api/chats/{id}` | A chat with its messages; rename; delete |
+| `POST`, `GET` | `/api/feedback` | Rate an answer (`message_id` links it to a chat message); totals and recent ratings |
+| `GET` | `/api/insights` | Usage, questions per day, most-cited documents, ratings |
+| `GET` | `/api/health` | Status, version, search model, reranker, OCR |
 
 ## Testing
 
-The tests use a fake search model, a fake reranker, fake OCR, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
-
 ```bash
-pip install -r requirements-dev.txt   # adds pytest and httpx
-pytest -q
+pytest -q                      # backend: fake models, fake OCR, temporary data; no downloads or keys
+cd web && npm test             # web app unit tests
+cd web && npm run typecheck
 ```
 
 | File | Covers |
 |---|---|
-| `tests/test_text_processing.py` | Chunking, citation cleanup, page formatting |
-| `tests/test_documents.py` | Upload, duplicate rejection, incremental and full indexing, failed files, delete, reload from disk |
-| `tests/test_ask.py` | `/ask`: cited answers, relevance cutoff, provider selection and errors |
-| `tests/test_search_model.py` | Per-model prefixes and cutoffs, environment overrides, re-indexing after a model change |
-| `tests/test_reranker.py` | Reranking order, candidate count, cutoff before reranking, turning reranking off |
-| `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract, blank scans |
-| `tests/test_stream.py` | `/ask/stream` events, cleaned citations, errors during generation, search-only requests |
-| `tests/test_library.py` | Document details, passages, search scope, feedback storage and summary, version |
-| `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
-| `tests/test_evaluation_scoring.py` | The evaluation script's grading rules |
+| `tests/test_accounts.py` | Supabase tokens (shared secret and published keys; expired, forged, wrong audience), users kept apart, workspaces, members and roles |
+| `tests/test_chats.py` | Saved chats, follow-ups, ratings on messages, background jobs and progress, "not covered" rule, answer language, file download, insights |
+| `tests/test_documents.py` | Upload, duplicates, incremental and full indexing, failed files, delete, restart |
+| `tests/test_ask.py`, `tests/test_stream.py` | `/api/ask` and `/api/ask/stream`: citations, cutoff, providers, errors |
+| `tests/test_library.py` | Document details, passages, search scope, feedback, moving 0.1 data |
+| `tests/test_search_model.py`, `tests/test_reranker.py` | Search-model settings and re-indexing, reranking |
+| `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract |
+| `tests/test_providers.py` | Claude, ChatGPT and Gemini requests against a local mock server |
+| `tests/test_text_processing.py`, `tests/test_evaluation_scoring.py` | Chunking, citations, grading rules |
+| `web/src/lib/format.test.ts` | Citation links, stream parsing, formatting |
 
-The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed. GitHub Actions runs the tests, and builds and checks the Docker image, on every push and pull request.
+GitHub Actions runs the backend tests, the web app checks and build, and a Docker build on every push and pull request.
 
 ## Evaluating answer quality
 
@@ -344,36 +364,34 @@ The grading uses keyword checks, not an AI judge. It is free and gives the same 
 python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --providers qwen-small
 ```
 
+
 ## Troubleshooting
 
-- **"Cannot reach the API":** start the backend (step 5) before the UI, and check `AFRISEARCH_API_URL`.
-- **A model is missing from the picker:** open **Other models** for the reason. Usually a key isn't set in the terminal running the API, or there's no GPU.
-- **"No passages were similar enough":** rephrase the question, or lower `AFRISEARCH_MIN_SCORE`.
-- **"documents were indexed with a different search model" / HTTP 409 from `/ask`:** the search model or chunk settings changed. Click **Re-index now** in the sidebar.
-- **"needs OCR, which is not available":** the file is a scan or photo and Tesseract isn't installed, or the API can't find it. Install it ([setup step 3](#3-optional-install-tesseract-for-scanned-pdfs-and-photos)) and restart the API. Then click **Upload and index** (no new files needed): files that failed before are retried.
-- **OCR text is poor:** OCR needs clear, straight, well-lit pages of at least about 300 dpi. Handwriting isn't supported. Check that the document's language is installed (`tesseract --list-langs`) and listed in `AFRISEARCH_OCR_LANGS`.
-- **Out of GPU memory:** set `AFRISEARCH_LOCAL_QUANTIZE=4bit`, or use gpt-oss-20b.
-- **Only "Qwen 2.5 0.5B" is offered:** that's expected on a machine with no API keys and no NVIDIA GPU. Add keys (setup step 4) to enable Claude, ChatGPT or Gemini; for those, also install `anthropic`, `openai` and `google-genai` into the environment.
-- **The first local answer is slow:** the model loads on the first question. Later questions are much faster.
-- **The first search is slow:** the search model and reranker load on first use (about 10 s on a laptop CPU, plus the download the very first time). Set `AFRISEARCH_RERANKER=off` if you don't want the reranker.
+- **"Can't reach the AfriSearch server":** start the API (`uvicorn …`, step 4). In development, open the Vite address (5173), which forwards `/api`.
+- **The page at port 8000 shows JSON instead of the app:** the web app isn't built. Run `cd web && npm install && npm run build`.
+- **Sign-in page says sign-in isn't configured:** set `SUPABASE_URL` and `SUPABASE_ANON_KEY` and restart the API.
+- **"Invalid sign-in token" after signing in:** the API and the web app use different Supabase projects, or a legacy project needs `SUPABASE_JWT_SECRET`.
+- **"No account uses that email yet" when adding a member:** they need to sign up once first.
+- **A model is missing from the model menu:** the menu lists unavailable models with the reason, usually a missing API key or no GPU.
+- **"needs OCR, which is not available":** install Tesseract and restart the API; then use **Index now** in the Library to retry.
+- **OCR text is poor:** use clear, straight, well-lit scans (about 300 dpi). Handwriting isn't supported.
+- **The first answer is slow:** local models and the reranker load on first use. Later answers are much faster.
 
 ## Notes and limitations
 
-- PDF, TXT and common image formats are supported; Word, Excel and other formats aren't. OCR doesn't read handwriting, and Tesseract has no language data for Afaan Oromo or Hausa (their Latin script is usually read acceptably with English).
-- Documents are stored locally in `data/uploads/`. Don't upload private or sensitive documents unless you control the machine and understand the risks.
-- Generated answers and citations can be wrong, especially from the small local model. Always check the source passages.
-- The app is for local use, not public deployment: there are no logins, and every user sees every document and all feedback. [SECURITY.md](SECURITY.md) explains the risks, and [ROADMAP.md](ROADMAP.md) the plan for logins, separate document spaces, HTTPS and backups.
-- Indexing runs inside the request, so very long scans can take minutes (background indexing is next on the roadmap).
-- The simple NumPy vector index is fine for small collections. Replace it with a vector database for large ones.
-- Local models load the first time you ask a question with them, so uploading, indexing and searching never download them.
+- PDF, TXT and common image formats are supported; Word, Excel and other formats aren't yet.
+- Answers and citations can be wrong, especially from the small local model. Every answer links to its sources.
+- With a cloud model, the passages needed for an answer are sent to that provider; use a local model for sensitive documents.
+- Data is stored in SQLite and files on one server. That suits a pilot; many concurrent users need PostgreSQL and object storage (see the roadmap).
+- There is no billing, usage quota or rate limiting yet; don't open sign-ups to the public without them.
 
 ## Project
 
-- [ROADMAP.md](ROADMAP.md): the plan from this open-source release to a hosted pilot
+- [ROADMAP.md](ROADMAP.md): from this release to a paid service
 - [CHANGELOG.md](CHANGELOG.md): what changed in each version
-- [CONTRIBUTING.md](CONTRIBUTING.md): how to report problems and contribute; evaluation questions in African languages are especially welcome
-- [SECURITY.md](SECURITY.md): current security limits and how to report a vulnerability
+- [CONTRIBUTING.md](CONTRIBUTING.md): reporting problems and contributing; evaluation questions in African languages are especially welcome
+- [SECURITY.md](SECURITY.md): security limits and how to report a vulnerability
 
 ## License
 
-AfriSearch is released under the [MIT license](LICENSE). The models it downloads have their own licenses: `multilingual-e5-small` (MIT), the reranker and Qwen 2.5 (Apache 2.0), Tesseract (Apache 2.0); Gemma 4 and the hosted APIs have their own terms of use.
+AfriSearch is released under the [MIT license](LICENSE). The models it downloads have their own licenses: `multilingual-e5-small` (MIT), the reranker and Qwen 2.5 (Apache 2.0), Tesseract (Apache 2.0); Gemma 4, Supabase and the hosted AI APIs have their own terms.

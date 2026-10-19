@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  :focus-visible {
+    outline-color: theme("colors.brand.500");
+  }
+}
+
+/* Answer text rendered from markdown. */
+.prose-answer > * + * { margin-top: 0.75em; }
+.prose-answer ul { list-style: disc; padding-left: 1.4em; }
+.prose-answer ol { list-style: decimal; padding-left: 1.4em; }
+.prose-answer li + li { margin-top: 0.25em; }
+.prose-answer strong { font-weight: 600; }
+.prose-answer h1, .prose-answer h2, .prose-answer h3 { font-weight: 600; font-size: 1.05em; }
+.prose-answer code { font-size: 0.9em; background: theme("colors.ink.100"); padding: 0.1em 0.3em; border-radius: 0.25rem; }
+.dark .prose-answer code { background: theme("colors.ink.800"); }
+.prose-answer table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.prose-answer th, .prose-answer td { border: 1px solid theme("colors.ink.200"); padding: 0.35em 0.6em; text-align: left; }
+.dark .prose-answer th, .dark .prose-answer td { border-color: theme("colors.ink.700"); }

@@ -6,9 +6,15 @@ the real data/ folder.
 """
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 import zlib
 from typing import Any
+
+# Before the backend is imported: anything that escapes a test's own temporary
+# folder still lands in a throwaway directory, never in the real data/ folder.
+os.environ["AFRISEARCH_DATA_DIR"] = tempfile.mkdtemp(prefix="afrisearch-tests-")
 
 import numpy as np
 import pytest
@@ -39,40 +45,56 @@ class FakeEmbedder:
         return vectors[0] if single else vectors
 
 
+class Env:
+    """The test app: a fake embedder, and the default workspace of the local user."""
+
+    def __init__(self, embedder: FakeEmbedder) -> None:
+        self.embedder = embedder
+
+    @property
+    def workspace_id(self) -> str:
+        from backend import main
+        from backend.auth import current_user
+
+        # current_user() records the user, as on any request, before workspaces are made.
+        return main.user_workspaces(current_user(None))[0]["id"]
+
+    @property
+    def store(self):
+        from backend import store
+
+        return store.get_store(self.workspace_id)
+
+
 @pytest.fixture
 def app_env(tmp_path, monkeypatch):
-    """backend.main pointed at an empty temporary data directory, with a fake embedder."""
-    from backend import main
+    """The app pointed at an empty temporary data directory, with a fake embedder."""
+    from backend import config, extract, models, store
 
-    data_dir = tmp_path / "data"
-    upload_dir = data_dir / "uploads"
-    upload_dir.mkdir(parents=True)
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setattr(main, "INDEX_PATH", data_dir / "index.json")
-    monkeypatch.setattr(main, "EMBEDDINGS_PATH", data_dir / "embeddings.npy")
-    monkeypatch.setattr(main, "MANIFEST_PATH", data_dir / "manifest.json")
-    monkeypatch.setattr(main, "chunks", [])
-    monkeypatch.setattr(main, "chunk_embeddings", None)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "AUTH_MODE", "none")
+    monkeypatch.setattr(store, "_stores", {})
     embedder = FakeEmbedder()
-    monkeypatch.setattr(main, "embedder", embedder)
+    monkeypatch.setattr(models, "embedder", embedder)
     # The fake embedder scores on a MiniLM-like scale, whatever the default model is.
-    monkeypatch.setattr(main, "MIN_SCORE", 0.2)
+    monkeypatch.setattr(models, "MIN_SCORE", 0.2)
     # No reranker unless a test installs a fake one (see test_reranker.py).
-    monkeypatch.setattr(main, "RERANKER_ID", "")
-    monkeypatch.setattr(main, "reranker", None)
+    monkeypatch.setattr(models, "RERANKER_ID", "")
+    monkeypatch.setattr(models, "reranker", None)
     # OCR is unavailable unless a test installs a fake one (see test_ocr.py), so
     # results don't depend on whether Tesseract is installed on this machine.
-    monkeypatch.setattr(main, "ocr_status", lambda: ([], "Tesseract is not installed (test)."))
-    return main, embedder
+    monkeypatch.setattr(extract, "ocr_status", lambda: ([], "Tesseract is not installed (test)."))
+    return Env(embedder)
 
 
 @pytest.fixture
 def client(app_env):
+    """An API client; paths are relative to /api."""
     from fastapi.testclient import TestClient
 
-    main, _ = app_env
-    return TestClient(main.app)
+    from backend import main
+
+    return TestClient(main.app, base_url="http://testserver/api")
 
 
 class FakeModel:
@@ -107,7 +129,7 @@ def fake_model(monkeypatch):
 
 
 def upload(client, *files: tuple[str, bytes]):
-    """POST files to /documents/upload and return the JSON response."""
+    """POST files to /api/documents/upload and return the JSON response."""
     response = client.post(
         "/documents/upload",
         files=[("files", (name, content, "application/octet-stream")) for name, content in files],

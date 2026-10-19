@@ -15,13 +15,12 @@ def blank_pdf() -> bytes:
 
 
 def test_upload_and_index_a_text_file(client, app_env):
-    main, _ = app_env
     result = upload(client, ("guide.txt", SOLAR_GUIDE))
     assert [item["filename"] for item in result["saved"]] == ["guide.txt"]
 
     indexed = client.post("/documents/index").json()
     assert indexed["new_documents"] == ["guide.txt"]
-    assert indexed["indexed_chunks"] == len(main.chunks) > 0
+    assert indexed["indexed_chunks"] == len(app_env.store.chunks) > 0
     assert indexed["failed"] == []
 
     documents = client.get("/documents").json()["documents"]
@@ -42,7 +41,7 @@ def test_unsupported_and_empty_files_are_rejected(client):
 
 
 def test_indexing_only_embeds_new_files(client, app_env):
-    _, embedder = app_env
+    embedder = app_env.embedder
     upload(client, ("guide.txt", SOLAR_GUIDE))
     client.post("/documents/index")
     assert len(embedder.batch_sizes) == 1
@@ -59,7 +58,7 @@ def test_indexing_only_embeds_new_files(client, app_env):
 
 
 def test_full_rebuild_embeds_every_document_again(client, app_env):
-    _, embedder = app_env
+    embedder = app_env.embedder
     upload(client, ("guide.txt", SOLAR_GUIDE), ("other.txt", b"Batteries last about ten years."))
     total = client.post("/documents/index").json()["indexed_chunks"]
     embedder.batch_sizes.clear()
@@ -70,16 +69,17 @@ def test_full_rebuild_embeds_every_document_again(client, app_env):
 
 
 def test_documents_indexed_with_old_settings_are_reembedded(client, app_env):
-    main, embedder = app_env
+    from backend import models
+
     upload(client, ("guide.txt", SOLAR_GUIDE))
     client.post("/documents/index")
-    for chunk in main.chunks:
+    for chunk in app_env.store.chunks:
         chunk["index_version"] = "old-settings"
-    embedder.batch_sizes.clear()
+    app_env.embedder.batch_sizes.clear()
 
     result = client.post("/documents/index").json()
     assert result["new_documents"] == ["guide.txt"]
-    assert all(chunk["index_version"] == main.INDEX_VERSION for chunk in main.chunks)
+    assert all(chunk["index_version"] == models.INDEX_VERSION for chunk in app_env.store.chunks)
 
 
 def test_unreadable_and_textless_pdfs_are_reported(client):
@@ -100,7 +100,6 @@ def test_failed_file_can_be_deleted(client):
 
 
 def test_delete_document_removes_file_and_chunks(client, app_env):
-    main, _ = app_env
     upload(client, ("guide.txt", SOLAR_GUIDE), ("other.txt", b"Batteries last about ten years."))
     client.post("/documents/index")
     documents = client.get("/documents").json()["documents"]
@@ -108,31 +107,31 @@ def test_delete_document_removes_file_and_chunks(client, app_env):
 
     result = client.delete(f"/documents/{guide['source_id']}").json()
     assert result["removed_chunks"] > 0
-    assert not (main.UPLOAD_DIR / guide["source_id"]).exists()
+    assert not (app_env.store.upload_dir / guide["source_id"]).exists()
     remaining = client.get("/documents").json()["documents"]
     assert [doc["source_name"] for doc in remaining] == ["other.txt"]
-    assert len(main.chunks) == len(main.chunk_embeddings)
+    assert len(app_env.store.chunks) == len(app_env.store.embeddings)
 
     assert client.delete(f"/documents/{guide['source_id']}").status_code == 404
 
 
 def test_delete_rejects_paths_outside_the_upload_folder(client, app_env):
-    main, _ = app_env
     upload(client, ("guide.txt", SOLAR_GUIDE))
     client.post("/documents/index")
-    assert main.INDEX_PATH.exists()
+    assert app_env.store.index_path.exists()
 
-    assert client.delete("/documents/..%2Findex.json").status_code == 404
-    assert main.INDEX_PATH.exists()
+    # Not routed to the delete endpoint at all (404 or 405 depending on routing).
+    assert client.delete("/documents/..%2Findex.json").status_code in (404, 405)
+    assert app_env.store.index_path.exists()
 
 
 def test_index_survives_a_restart(client, app_env):
-    main, _ = app_env
+    from backend.store import DocumentStore
+
     upload(client, ("guide.txt", SOLAR_GUIDE))
     client.post("/documents/index")
-    saved = [chunk["chunk_id"] for chunk in main.chunks]
+    saved = [chunk["chunk_id"] for chunk in app_env.store.chunks]
 
-    main.chunks, main.chunk_embeddings = [], None
-    main.load_index_from_disk()
-    assert [chunk["chunk_id"] for chunk in main.chunks] == saved
-    assert main.chunk_embeddings.shape[0] == len(saved)
+    reloaded = DocumentStore(app_env.store.dir)  # as after a server restart
+    assert [chunk["chunk_id"] for chunk in reloaded.chunks] == saved
+    assert reloaded.embeddings.shape[0] == len(saved)

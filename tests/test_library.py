@@ -48,8 +48,7 @@ def test_search_can_be_limited_to_some_documents(client, fake_model):
     assert "water.txt" not in streamed
 
 
-def test_feedback_is_stored_and_summarized(client, app_env):
-    main, _ = app_env
+def test_feedback_is_stored_and_summarized(client):
     for rating, comment in [("up", ""), ("down", "Wrong number"), ("up", "Great")]:
         response = client.post("/feedback", json={
             "rating": rating, "question": QUESTION, "answer": "One minute [S1].",
@@ -60,19 +59,35 @@ def test_feedback_is_stored_and_summarized(client, app_env):
     assert (summary["total"], summary["up"], summary["down"]) == (3, 2, 1)
     assert summary["recent"][0]["comment"] == "Great"  # newest first
     assert summary["recent"][0]["time"]
+    assert summary["recent"][0]["sources"] == ["water.txt"]
     assert len(client.get("/feedback?limit=1").json()["recent"]) == 1
-    assert main.feedback_path().parent == main.DATA_DIR
+
+    other = client.post("/workspaces", json={"name": "Other"}).json()["id"]
+    assert client.get("/feedback", headers={"X-Workspace-Id": other}).json()["total"] == 0
 
 
 def test_feedback_validation(client):
     assert client.post("/feedback", json={"rating": "meh", "question": QUESTION}).status_code == 422
     assert client.post("/feedback", json={"rating": "up", "question": ""}).status_code == 422
+    assert client.post("/feedback", json={"rating": "up", "question": QUESTION,
+                                          "message_id": "missing"}).status_code == 404
 
 
-def test_damaged_feedback_lines_are_skipped(client, app_env):
-    main, _ = app_env
-    main.feedback_path().write_text('{"rating": "up", "question": "q"}\nnot json\n', encoding="utf-8")
-    assert client.get("/feedback").json()["total"] == 1
+def test_documents_from_the_old_folder_layout_move_into_the_first_workspace(app_env, client):
+    from backend import config
+
+    legacy = config.DATA_DIR / "uploads"
+    legacy.mkdir(parents=True)
+    (legacy / "guide.txt").write_bytes(SOLAR_GUIDE)
+    (legacy / ".gitkeep").write_text("")
+    (config.DATA_DIR / "feedback.jsonl").write_text(
+        '{"rating": "up", "question": "q"}\nnot json\n', encoding="utf-8")
+
+    result = client.post("/documents/index").json()  # first request creates the workspace
+    assert result["new_documents"] == ["guide.txt"]
+    assert [p.name for p in legacy.iterdir()] == [".gitkeep"]  # hidden files stay
+    assert client.get("/feedback").json()["total"] == 1  # damaged lines are skipped
+    assert (config.DATA_DIR / "feedback.jsonl.imported").exists()
 
 
 def test_version_is_reported(client):

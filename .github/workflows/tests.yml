@@ -26,6 +26,24 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -33,7 +51,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the image
         run: docker build -t afrisearch:ci .
-      - name: Check Tesseract and the app import inside the image
+      - name: Check Tesseract, the app import and the bundled web app inside the image
         run: |
           docker run --rm afrisearch:ci tesseract --list-langs
           docker run --rm afrisearch:ci python -c "from backend import __version__, main; print('AfriSearch', __version__)"
+          docker run --rm afrisearch:ci test -f web/dist/index.html

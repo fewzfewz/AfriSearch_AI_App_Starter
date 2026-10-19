@@ -2,6 +2,32 @@
 
 All notable changes to AfriSearch are listed here. The project uses [semantic versioning](https://semver.org/): until 1.0, minor versions may change the API or the index format.
 
+## [0.2.0] — 2026-10-19
+
+Towards a hosted product: accounts, workspaces and a new web app.
+
+### Added
+- **Web app** (React, TypeScript, Tailwind) replacing the Streamlit UI: landing page, sign-in, chat-style Ask with saved conversations, Library with drag-and-drop upload and live indexing progress, Insights, Settings, light/dark mode, phone layout.
+- **Accounts** with Supabase Auth (`AFRISEARCH_AUTH=supabase`): sign-up, sign-in, Google, password reset. Local mode (`none`) keeps working without accounts.
+- **Workspaces**: separate documents, index, chats, feedback and insights per workspace; owners add members by email.
+- **Saved chats** with follow-up questions that use the earlier conversation.
+- **Background indexing** (`POST /api/documents/index?wait=false`, `GET /api/jobs/{id}`) with file and page progress.
+- **"Not covered" answers**: when even the best passage scores low with the reranker, the model isn't asked and the closest passages are shown (`AFRISEARCH_MIN_RERANK_SCORE`).
+- Answers in the question's language; explicit instruction for Amharic.
+- Passages far below the best reranked one are no longer given to the model (`AFRISEARCH_RERANK_GAP`), which stopped small models mixing up facts.
+- Local models on CPU load straight into memory instead of spilling to disk when RAM is short (answers took minutes).
+- Open the original document at the cited page (`GET /api/documents/{id}/file`).
+- Insights endpoint: questions per day, most-cited documents, ratings.
+
+### Changed
+- **All API endpoints moved under `/api`**; the API serves the built web app at `/`.
+- Backend split into modules (`config`, `auth`, `db`, `store`, `jobs`, `extract`, `models`, `answers`, `text`); data now lives in `data/afrisearch.db` and `data/workspaces/<id>/`.
+- Documents and ratings from 0.1 move into the local user's first workspace on first start.
+- Docker: one service on port 8000 with a two-stage build (web app + API); `.env.example` added.
+
+### Removed
+- The Streamlit UI (`frontend/`, `.streamlit/`) and the `streamlit` and `requests` dependencies.
+
 ## [0.1.0] — 2026-10-19
 
 First public release.

@@ -10,3 +10,9 @@ data/manifest.json
 !.gitkeep
 .streamlit/secrets.toml
 evaluation/results/
+data/afrisearch.db*
+data/workspaces/
+data/feedback.jsonl*
+web/node_modules/
+web/dist/
+.env

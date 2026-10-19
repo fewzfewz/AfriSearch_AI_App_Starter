@@ -1,5 +1,5 @@
 """Chunking, citation cleanup and page formatting (pure functions)."""
-from backend.main import chunk_document, clean_citations, format_pages, split_sentences
+from backend.text import chunk_document, clean_citations, format_pages, split_sentences
 
 
 def words(text: str) -> int:

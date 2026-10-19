@@ -23,11 +23,21 @@ pytest -q
 
 The tests use fake models, fake OCR and a temporary data folder, so they need no downloads, keys or GPU and run in under a minute.
 
+For the web app (`web/`, React + TypeScript + Tailwind):
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:5173, with /api forwarded to the API on :8000
+npm run typecheck
+npm test
+```
+
 ## Making a change
 
 1. Create a branch from `main`.
 2. Keep the change focused; one pull request per fix or feature.
-3. Add or update tests for what you changed (`tests/`), and run `pytest -q`.
+3. Add or update tests for what you changed (`tests/`, `web/src/**/*.test.ts`), and run `pytest -q` (and `npm test` and `npm run typecheck` in `web/`).
 4. If the change affects search or answers, run the evaluation and put the before/after numbers in the pull request:
    ```bash
    python evaluation/run_eval.py --retrieval-only --modes semantic rerank

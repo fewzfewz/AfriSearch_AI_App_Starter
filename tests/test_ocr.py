@@ -4,6 +4,7 @@ import io
 import pytest
 from PIL import Image
 
+from backend import extract, store
 from conftest import SOLAR_GUIDE, upload
 from test_documents import blank_pdf
 
@@ -41,17 +42,16 @@ def png_bytes() -> bytes:
 
 
 def test_scanned_pdf_is_read_with_ocr(client, app_env, fake_model, monkeypatch):
-    main, _ = app_env
     calls = []
-    monkeypatch.setattr(main, "ocr_status", lambda: (["eng"], None))
-    monkeypatch.setattr(main, "ocr_image", lambda image: calls.append(image.size) or OCR_TEXT)
+    monkeypatch.setattr(extract, "ocr_status", lambda: (["eng"], None))
+    monkeypatch.setattr(extract, "ocr_image", lambda image: calls.append(image.size) or OCR_TEXT)
     upload(client, ("scan.pdf", blank_pdf()))
     result = client.post("/documents/index").json()
     assert result["failed"] == []
     assert result["new_documents"] == ["scan.pdf"]
     assert len(calls) == 1
     width, _ = calls[0]
-    assert width == pytest.approx(100 * main.OCR_DPI / 72, abs=2)  # page rendered at OCR_DPI
+    assert width == pytest.approx(100 * extract.OCR_DPI / 72, abs=2)  # page rendered at OCR_DPI
 
     documents = client.get("/documents").json()["documents"]
     assert documents[0]["ocr"] is True
@@ -62,32 +62,30 @@ def test_scanned_pdf_is_read_with_ocr(client, app_env, fake_model, monkeypatch):
 
 
 def test_pages_with_a_text_layer_skip_ocr(app_env, monkeypatch, tmp_path):
-    main, _ = app_env
     calls = []
-    monkeypatch.setattr(main, "ocr_status", lambda: (["eng"], None))
-    monkeypatch.setattr(main, "ocr_image", lambda image: calls.append(image.size) or OCR_TEXT)
+    monkeypatch.setattr(extract, "ocr_status", lambda: (["eng"], None))
+    monkeypatch.setattr(extract, "ocr_image", lambda image: calls.append(image.size) or OCR_TEXT)
     path = tmp_path / "mixed.pdf"
     path.write_bytes(text_pdf("Inverters should be inspected once a year by a technician.", ""))
-    pages, ocr_pages = main.extract_file(path)
+    pages, ocr_pages = extract.extract_file(path)
     assert ocr_pages == {2}
     assert len(calls) == 1
     assert pages[0] == (1, "Inverters should be inspected once a year by a technician.")
     assert pages[1] == (2, OCR_TEXT)
 
-    chunks = main.create_chunks("id", "mixed.pdf", pages, ocr_pages)
+    chunks = store.create_chunks("id", "mixed.pdf", pages, ocr_pages)
     assert [(c["page"], c["page_end"], c["ocr"]) for c in chunks] == [(1, 2, True)]
-    assert main.create_chunks("id", "mixed.pdf", pages[:1], ocr_pages)[0]["ocr"] is False
+    assert store.create_chunks("id", "mixed.pdf", pages[:1], ocr_pages)[0]["ocr"] is False
 
 
 def test_images_are_read_with_ocr(client, app_env, monkeypatch):
-    main, _ = app_env
-    monkeypatch.setattr(main, "ocr_status", lambda: (["eng"], None))
-    monkeypatch.setattr(main, "ocr_image", lambda image: OCR_TEXT)
+    monkeypatch.setattr(extract, "ocr_status", lambda: (["eng"], None))
+    monkeypatch.setattr(extract, "ocr_image", lambda image: OCR_TEXT)
     saved = upload(client, ("photo.png", png_bytes()))["saved"]
     assert [item["filename"] for item in saved] == ["photo.png"]
     result = client.post("/documents/index").json()
     assert result["new_documents"] == ["photo.png"]
-    chunk = main.chunks[0]
+    chunk = app_env.store.chunks[0]
     assert (chunk["page"], chunk["ocr"]) == (None, True)
 
 
@@ -102,9 +100,8 @@ def test_without_ocr_scans_and_images_are_reported(client):
 
 
 def test_blank_scans_are_reported(client, app_env, monkeypatch):
-    main, _ = app_env
-    monkeypatch.setattr(main, "ocr_status", lambda: (["eng"], None))
-    monkeypatch.setattr(main, "ocr_image", lambda image: "")
+    monkeypatch.setattr(extract, "ocr_status", lambda: (["eng"], None))
+    monkeypatch.setattr(extract, "ocr_image", lambda image: "")
     upload(client, ("blank.pdf", blank_pdf()))
     failed = client.post("/documents/index").json()["failed"]
     assert "No text found, even with OCR" in failed[0]["error"]
@@ -140,20 +137,18 @@ class FakeTesseract:
 def test_ocr_uses_installed_languages(monkeypatch, installed, wanted, expected):
     import pytesseract
 
-    from backend import main
 
     monkeypatch.setattr(pytesseract, "get_languages", FakeTesseract(installed))
-    monkeypatch.setattr(main, "OCR_LANGUAGES", wanted)
-    assert main.ocr_status() == (expected, None)
+    monkeypatch.setattr(extract, "OCR_LANGUAGES", wanted)
+    assert extract.ocr_status() == (expected, None)
 
 
 def test_ocr_reports_missing_tesseract(monkeypatch):
     import pytesseract
 
-    from backend import main
 
     monkeypatch.setattr(pytesseract, "get_languages",
                         FakeTesseract(error=pytesseract.TesseractNotFoundError()))
-    languages, reason = main.ocr_status()
+    languages, reason = extract.ocr_status()
     assert languages == []
     assert "Install Tesseract" in reason
