@@ -7,9 +7,10 @@ import os
 import re
 import threading
 import uuid
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 # Unless HF_HOME is set explicitly, keep model weights in a dedicated cache
 # directory (~/.cache/hf_models) instead of the default ~/.cache/huggingface.
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
-from backend import llm
+from backend import __version__, llm
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
@@ -113,7 +114,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AfriSearch AI API",
     description="Local document ingestion, semantic retrieval, and grounded Q&A.",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -127,6 +128,17 @@ class AskRequest(BaseModel):
     provider: str | None = None
     # Reorder passages with the reranker; defaults to on when one is configured.
     rerank: bool | None = None
+    # Only search these documents (source ids from GET /documents); all when empty.
+    source_ids: list[str] | None = None
+
+
+class FeedbackRequest(BaseModel):
+    rating: Literal["up", "down"]
+    question: str = Field(min_length=1, max_length=1500)
+    answer: str | None = Field(default=None, max_length=20000)
+    provider: str | None = Field(default=None, max_length=100)
+    comment: str = Field(default="", max_length=1000)
+    sources: list[str] = Field(default_factory=list, max_length=8)  # cited document names
 
 
 def get_embedder() -> SentenceTransformer:
@@ -509,12 +521,14 @@ def remove_document(source_id: str) -> int:
 
 def retrieve(
     question: str, top_k: int = 4, min_score: float | None = None, rerank: bool | None = None,
+    source_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Best passages for the question, most relevant first.
 
     Passages must reach `min_score` semantic similarity. If reranking is on (the
     default when a reranker is configured), the reranker reorders the best
-    candidates; `score` stays the semantic similarity either way.
+    candidates; `score` stays the semantic similarity either way. `source_ids`
+    limits the search to those documents.
     """
     if min_score is None:
         min_score = MIN_SCORE
@@ -526,7 +540,11 @@ def retrieve(
             return []
         # Only search chunks embedded with the current search model; vectors from
         # another model are not comparable even when they have the same size.
-        current = [i for i, item in enumerate(chunks) if item.get("index_version") == INDEX_VERSION]
+        scope = set(source_ids) if source_ids else None
+        current = [
+            i for i, item in enumerate(chunks)
+            if item.get("index_version") == INDEX_VERSION and (scope is None or item["source_id"] in scope)
+        ]
         if not current:
             return []
         current_chunks = [chunks[i] for i in current]
@@ -623,7 +641,7 @@ def generate_answer(question: str, sources: list[dict[str, Any]], provider: str)
 def root():
     return {
         "name": "AfriSearch AI API",
-        "version": "0.1.0",
+        "version": __version__,
         "docs": "/docs",
         "index_ready": bool(chunks),
     }
@@ -713,20 +731,48 @@ def index_documents(full: bool = False):
 
 @app.get("/documents")
 def list_documents():
-    unique = {}
-    stale, ocr = set(), set()
+    documents: dict[str, dict[str, Any]] = {}
+    stale = set()
     for item in chunks:
-        unique[item["source_id"]] = item["source_name"]
+        doc = documents.setdefault(item["source_id"], {
+            "source_id": item["source_id"],
+            "source_name": item["source_name"],
+            "type": Path(item["source_name"]).suffix.lower().lstrip(".") or "txt",
+            "ocr": False,
+            "passages": 0,
+            "pages": None,
+        })
+        doc["passages"] += 1
+        doc["ocr"] = doc["ocr"] or bool(item.get("ocr"))
+        last_page = item.get("page_end") or item.get("page")
+        if last_page:
+            doc["pages"] = max(doc["pages"] or 0, last_page)
         if item.get("index_version") != INDEX_VERSION:
             stale.add(item["source_id"])
-        if item.get("ocr"):
-            ocr.add(item["source_id"])
-    return {"documents": [{"source_id": key, "source_name": name, "ocr": key in ocr}
-                          for key, name in unique.items()],
+    for doc in documents.values():
+        path = UPLOAD_DIR / doc["source_id"]
+        stat = path.stat() if path.is_file() else None
+        doc["bytes"] = stat.st_size if stat else None
+        doc["uploaded_at"] = (datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
+                              if stat else None)
+    return {"documents": list(documents.values()),
             "indexed_chunks": len(chunks),
             # Documents indexed with another search model or chunking; re-index to search them.
             "stale_documents": len(stale),
             **search_settings()}
+
+
+@app.get("/documents/{source_id}/passages")
+def document_passages(source_id: str):
+    passages = [
+        {"chunk_id": item["chunk_id"], "page": item.get("page"), "page_end": item.get("page_end"),
+         "ocr": item.get("ocr", False), "text": item["text"]}
+        for item in chunks if item["source_id"] == source_id
+    ]
+    if not passages:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return {"source_id": source_id, "source_name": next(c["source_name"] for c in chunks if c["source_id"] == source_id),
+            "passages": passages}
 
 
 @app.delete("/documents/{source_id}")
@@ -792,7 +838,7 @@ def search_summary(request: AskRequest, provider: str | None, sources: list[dict
 def ask(request: AskRequest):
     check_index_ready()
     provider = choose_provider(request)
-    sources = retrieve(request.question, request.top_k, rerank=request.rerank)
+    sources = retrieve(request.question, request.top_k, rerank=request.rerank, source_ids=request.source_ids)
     answer = None
     removed_citations: list[str] = []
     if provider:
@@ -822,7 +868,7 @@ def ask_stream(request: AskRequest):
         reason = llm.PROVIDERS[provider].unavailable_reason()
         if reason:
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
-    sources = retrieve(request.question, request.top_k, rerank=request.rerank)
+    sources = retrieve(request.question, request.top_k, rerank=request.rerank, source_ids=request.source_ids)
 
     def event(kind: str, **fields: Any) -> str:
         return json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
@@ -852,6 +898,41 @@ def ask_stream(request: AskRequest):
         yield event("done", answer=answer, removed_citations=removed)
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
+
+
+def feedback_path() -> Path:
+    return DATA_DIR / "feedback.jsonl"
+
+
+feedback_lock = threading.Lock()
+
+
+@app.post("/feedback")
+def add_feedback(feedback: FeedbackRequest):
+    """Store a rating of an answer (one JSON object per line in data/feedback.jsonl)."""
+    record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), **feedback.model_dump()}
+    with feedback_lock, feedback_path().open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return {"message": "Thanks for the feedback."}
+
+
+@app.get("/feedback")
+def list_feedback(limit: int = 20):
+    """Feedback totals and the most recent ratings, newest first."""
+    records = []
+    with feedback_lock:
+        if feedback_path().exists():
+            for line in feedback_path().read_text(encoding="utf-8").splitlines():
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue  # skip a damaged line rather than failing the whole summary
+    return {
+        "total": len(records),
+        "up": sum(r.get("rating") == "up" for r in records),
+        "down": sum(r.get("rating") == "down" for r in records),
+        "recent": records[::-1][: max(0, min(limit, 200))],
+    }
 
 
 # Load previously persisted index on module import as well, useful in some reload setups.

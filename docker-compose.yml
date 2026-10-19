@@ -1,0 +1,45 @@
+# docker compose up --build    then open http://127.0.0.1:8501
+#
+# Both services listen on 127.0.0.1 only: AfriSearch has no logins yet, so it
+# must not be reachable from other machines (see SECURITY.md).
+services:
+  api:
+    build: .
+    image: afrisearch:0.1.0
+    environment:
+      AFRISEARCH_DEFAULT_PROVIDER: ${AFRISEARCH_DEFAULT_PROVIDER:-}
+      AFRISEARCH_RERANKER: ${AFRISEARCH_RERANKER:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
+      AFRISEARCH_OCR_LANGS: ${AFRISEARCH_OCR_LANGS:-eng+amh+swa}
+      # Optional keys for hosted answer models, taken from your shell or a .env file.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - afrisearch-data:/app/data   # uploads, index, feedback
+      - afrisearch-models:/models   # downloaded model weights (~1 GB on first use)
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  ui:
+    image: afrisearch:0.1.0
+    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0", "--server.port", "8501",
+              "--server.headless", "true", "--browser.gatherUsageStats", "false"]
+    environment:
+      AFRISEARCH_API_URL: http://api:8000
+      AFRISEARCH_API_DOCS_URL: http://127.0.0.1:8000/docs
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  afrisearch-data:
+  afrisearch-models:

@@ -1,6 +1,20 @@
-# AfriSearch AI — Web App Starter
+# AfriSearch AI
 
-A local app for asking questions about your own documents. Upload PDFs, text files or photos of documents, and AfriSearch finds the most relevant passages and writes an answer that cites them. It turns the Notebook 5 pipeline into a web app.
+[![tests](https://github.com/fewzfewz/AfriSearch_AI_App_Starter/actions/workflows/tests.yml/badge.svg)](https://github.com/fewzfewz/AfriSearch_AI_App_Starter/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![version 0.1.0](https://img.shields.io/badge/version-0.1.0-orange.svg)
+
+Ask questions about your own documents, in English, Amharic, Swahili and 90+ other languages. Upload PDFs, text files or photos of documents, and AfriSearch finds the most relevant passages and writes an answer that cites them.
+
+**Quick start with Docker**
+
+```bash
+docker compose up --build        # or: docker-compose up --build
+```
+
+Then open http://127.0.0.1:8501. The first start downloads about 1 GB of models. To use Claude, ChatGPT or Gemini, set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` in your shell or a `.env` file first. See [Running with Docker](#running-with-docker), or [Setup](#setup) to run without Docker.
+
+> **Status:** v0.1, for local use by one person or a trusted team. It has no logins yet, so don't expose it to the internet ([SECURITY.md](SECURITY.md)). The plan to a hosted release is in [ROADMAP.md](ROADMAP.md).
 
 **Features**
 - Upload PDF and TXT documents, and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP); exact duplicates are rejected
@@ -13,6 +27,9 @@ A local app for asking questions about your own documents. Upload PDFs, text fil
 - Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question; local models show the answer as it is written
 - Citations like `[S1]` link to the source passages; citations that don't match a source are removed
 - Files that can't be indexed (for example a scan when OCR isn't installed) are reported in the UI, with the reason
+- **Ask** tab: choose which documents to search, write an answer or just find passages, citations that jump to their source, 👍/👎 ratings with comments, and Markdown export of an answer or the whole session
+- **Library** tab: every document with its type, pages, passages, OCR status, size and date; read its passages or delete it
+- **Insights** tab: library and session statistics, and the ratings everyone has given
 - Light and dark mode, and a layout that works on phones
 - The index stays on disk between restarts
 
@@ -25,7 +42,9 @@ backend/main.py   FastAPI: ingestion, OCR, chunking, embeddings, retrieval, rera
 backend/llm.py    Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
 tests/            pytest suite (no downloads, keys or GPU needed)
 evaluation/       question set with known answers + scoring script
-data/             uploads/, index.json, embeddings.npy, manifest.json (created at runtime)
+data/             uploads/, index.json, embeddings.npy, manifest.json, feedback.jsonl (created at runtime)
+Dockerfile, docker-compose.yml   container image (with Tesseract) and the two services
+.github/workflows/               tests and Docker build on every push
 ```
 
 - **Search model:** `intfloat/multilingual-e5-small`, with the `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` reranker (see [Search](#search))
@@ -119,13 +138,33 @@ streamlit run frontend/app.py
 
 The UI opens at http://localhost:8501.
 
+## Running with Docker
+
+```bash
+docker compose up --build        # older installs: docker-compose up --build
+```
+
+- **UI:** http://127.0.0.1:8501 · **API docs:** http://127.0.0.1:8000/docs
+- The image includes Tesseract with English, Amharic and Swahili, and the CPU build of PyTorch.
+- Documents, the index and feedback are kept in the `afrisearch-data` volume, and downloaded models in `afrisearch-models`, so they survive restarts and upgrades. `docker compose down -v` deletes them.
+- API keys and settings (`AFRISEARCH_DEFAULT_PROVIDER`, `AFRISEARCH_RERANKER`, `AFRISEARCH_OCR_LANGS`) are read from your shell or a `.env` file next to `docker-compose.yml`.
+- Both services listen on `127.0.0.1` only. Don't change that until logins exist ([SECURITY.md](SECURITY.md)).
+- The image runs on CPU. The GPU answer models (Qwen 3.8, Gemma 4, gpt-oss) need an NVIDIA GPU and the NVIDIA container toolkit, which this compose file doesn't set up.
+
 ## Using the app
 
-1. **Add documents:** in the sidebar, choose PDF, TXT or image files and click **Upload and index**. Only new files are processed; scanned pages are read with OCR, which takes a few seconds per page. The sidebar lists your documents (🗑 deletes one, **OCR** marks documents read with OCR) and any file that couldn't be indexed, with the reason.
-2. **Pick a model:** the line above the question shows which model will answer and where it runs (Cloud API, Local · GPU or Local · CPU). Open **Settings** to change the model, the number of passages it sees, and reranking. **Other models** there explains why the rest are unavailable, for example a missing API key or no GPU.
-3. **Ask:** type a question in any language and press **Ask AfriSearch** or **Ctrl+Enter**. With a local model, the answer appears as it is written.
-4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each card shows the file, pages, relevance, reranker score and whether the text came from OCR, with the full passage one click away. Always check important claims against them.
-5. **Earlier questions:** your last 10 answers stay available in the session. Click **Show** to bring one back.
+The sidebar is for adding documents; the main area has three tabs.
+
+1. **Add documents:** in the sidebar, choose PDF, TXT or image files and click **Upload and index**. Only new files are processed; scanned pages are read with OCR, which takes a few seconds per page. Files that couldn't be indexed are listed with the reason.
+2. **Ask tab:**
+   - The line above the question shows which model will answer and where it runs (Cloud API, Local · GPU or Local · CPU).
+   - **Settings** changes the mode (**Write an answer**, or **Find passages only**: instant, and nothing is sent to a cloud API), the answer model, the number of passages and reranking. **Other models** there explains why the rest are unavailable.
+   - **Search in** limits the search to the documents you pick; leave it empty to search everything.
+   - Type a question in any language and press **Ask AfriSearch** or **Ctrl+Enter**. With a local model, the answer appears as it is written.
+3. **Check the answer:** click a citation such as **S1** to jump to its source card, which shows the file, pages, relevance, reranker score and whether the text came from OCR. Always check important claims against the sources.
+4. **Rate and save:** **Rate this answer** records 👍 or 👎 with an optional comment. **Download** saves the question, answer and sources as Markdown, and **Download session** saves every question from this session.
+5. **Library tab:** all documents in a table. Filter by name, select a row to read its passages, or delete it (with confirmation).
+6. **Insights tab:** document and passage counts, this session's questions and average answer time, and the ratings from everyone using this server.
 
 **Advanced → Rebuild full index** processes every document again. You rarely need it: when the search model or chunk settings change, the sidebar shows which documents are out of date, and **Re-index now** (or **Upload and index**) updates just those.
 
@@ -230,11 +269,15 @@ The model-name variables are listed in [Answer models](#answer-models).
 |---|---|---|
 | `POST` | `/documents/upload` | Upload PDF, TXT or image files (multipart field `files`) |
 | `POST` | `/documents/index` | Index new uploads; `?full=true` rebuilds everything. Returns failed files |
-| `GET` | `/documents` | Indexed documents (and whether each was read with OCR), chunk count, documents needing re-indexing, search model, reranker and OCR status |
+| `GET` | `/documents` | Indexed documents (type, pages, passages, OCR, size, upload time), chunk count, documents needing re-indexing, search model, reranker and OCR status |
+| `GET` | `/documents/{source_id}/passages` | The indexed passages of one document, with pages and OCR flags |
 | `DELETE` | `/documents/{source_id}` | Delete a document and its chunks |
 | `GET` | `/providers` | Answer models, whether each is available, and why not |
-| `POST` | `/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer"}` → answer, sources (with `score` and `rerank_score`), whether they were reranked, removed citations |
+| `POST` | `/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer", "source_ids"}` → answer, sources (with `score` and `rerank_score`), whether they were reranked, removed citations. `source_ids` limits the search to those documents |
 | `POST` | `/ask/stream` | Same request as `/ask`; streams newline-delimited JSON events: `sources`, then `token` pieces of the answer, then `done` (cleaned answer) or `error` |
+| `POST` | `/feedback` | `{"rating": "up" or "down", "question", "answer", "provider", "comment", "sources"}`; appended to `data/feedback.jsonl` |
+| `GET` | `/feedback` | Rating totals and the most recent ratings (`?limit=20`) |
+| `GET` | `/` | Name and version |
 | `GET` | `/health` | Status, chunk count, search model, reranker and OCR status |
 
 ## Testing
@@ -255,10 +298,11 @@ pytest -q
 | `tests/test_reranker.py` | Reranking order, candidate count, cutoff before reranking, turning reranking off |
 | `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract, blank scans |
 | `tests/test_stream.py` | `/ask/stream` events, cleaned citations, errors during generation, search-only requests |
+| `tests/test_library.py` | Document details, passages, search scope, feedback storage and summary, version |
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
 | `tests/test_evaluation_scoring.py` | The evaluation script's grading rules |
 
-The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed.
+The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed. GitHub Actions runs the tests, and builds and checks the Docker image, on every push and pull request.
 
 ## Evaluating answer quality
 
@@ -318,6 +362,18 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 - PDF, TXT and common image formats are supported; Word, Excel and other formats aren't. OCR doesn't read handwriting, and Tesseract has no language data for Afaan Oromo or Hausa (their Latin script is usually read acceptably with English).
 - Documents are stored locally in `data/uploads/`. Don't upload private or sensitive documents unless you control the machine and understand the risks.
 - Generated answers and citations can be wrong, especially from the small local model. Always check the source passages.
-- The app is for local development, not public deployment. Before exposing it to the internet, add authentication, upload quotas, file-content validation, rate limits, secure configuration and stronger storage controls.
+- The app is for local use, not public deployment: there are no logins, and every user sees every document and all feedback. [SECURITY.md](SECURITY.md) explains the risks, and [ROADMAP.md](ROADMAP.md) the plan for logins, separate document spaces, HTTPS and backups.
+- Indexing runs inside the request, so very long scans can take minutes (background indexing is next on the roadmap).
 - The simple NumPy vector index is fine for small collections. Replace it with a vector database for large ones.
 - Local models load the first time you ask a question with them, so uploading, indexing and searching never download them.
+
+## Project
+
+- [ROADMAP.md](ROADMAP.md): the plan from this open-source release to a hosted pilot
+- [CHANGELOG.md](CHANGELOG.md): what changed in each version
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to report problems and contribute; evaluation questions in African languages are especially welcome
+- [SECURITY.md](SECURITY.md): current security limits and how to report a vulnerability
+
+## License
+
+AfriSearch is released under the [MIT license](LICENSE). The models it downloads have their own licenses: `multilingual-e5-small` (MIT), the reranker and Qwen 2.5 (Apache 2.0), Tesseract (Apache 2.0); Gemma 4 and the hosted APIs have their own terms of use.
