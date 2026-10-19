@@ -1,0 +1,13 @@
+SunBox SB-500 Solar Home Kit: Product Sheet
+
+This product sheet is an illustrative sample written for testing AfriSearch. SunBox is a fictional brand.
+
+Model: SunBox SB-500.
+
+What is in the box. One 120 watt solar panel, a lithium battery unit with a capacity of 307 watt-hours, 6 LED lights with 5 metres of cable each, and a phone charging port.
+
+Running time. On a full charge the kit powers all its lights for about 12 hours.
+
+Warranty. The SunBox SB-500 has a 3-year warranty on the battery and the panel. Keep the receipt; the warranty is not valid without it.
+
+Price. The recommended retail price of the SunBox SB-500 is 47,500 shillings.

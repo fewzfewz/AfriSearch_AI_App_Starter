@@ -73,13 +73,14 @@ def render_answer_text(text: str) -> str:
 
 api_ok = True
 providers, default_provider, documents, chunk_count = [], None, [], 0
-stale_documents, search_model = 0, None
+stale_documents, search_model, reranker_model = 0, None, None
 try:
     provider_data = api_get("/providers")
     providers, default_provider = provider_data["providers"], provider_data["default"]
     doc_data = api_get("/documents")
     documents, chunk_count = doc_data["documents"], doc_data["indexed_chunks"]
     stale_documents, search_model = doc_data.get("stale_documents", 0), doc_data.get("embedder")
+    reranker_model = doc_data.get("reranker")
 except requests.RequestException:
     api_ok = False
 
@@ -95,6 +96,8 @@ with st.sidebar:
     chunks_col.metric("Chunks", chunk_count)
     if search_model:
         st.caption(f":material/travel_explore: Search model: `{search_model}`")
+    if reranker_model:
+        st.caption(f":material/sort: Reranker: `{reranker_model}`")
     if stale_documents:
         st.warning(
             f"{stale_documents} document(s) were indexed with a different search model or settings "
@@ -212,6 +215,12 @@ with st.container(border=True):
     with passages_col:
         top_k = st.slider("Passages to retrieve", min_value=1, max_value=8, value=4,
                           help="More passages give the model more context but make answers slower.")
+        rerank = st.toggle(
+            "Rerank passages", value=bool(reranker_model), disabled=not reranker_model,
+            help="A second model rereads the best matches and puts the most relevant first. "
+                 "More accurate; adds about 1-2 seconds on a CPU."
+                 if reranker_model else "No reranker is configured (AFRISEARCH_RERANKER is off).",
+        )
     if unavailable:
         with st.expander(f"Other models ({len(unavailable)} unavailable)"):
             for p in unavailable:
@@ -244,6 +253,7 @@ if asked:
                         "top_k": top_k,
                         "generate_answer": True,
                         "provider": provider,
+                        "rerank": rerank,
                     },
                     timeout=900,
                 )
@@ -273,6 +283,8 @@ if payload:
         if payload.get("model"):
             label = payload.get("provider_label", payload["provider"]).replace("[", "(").replace("]", ")")
             badges.insert(0, f":blue-badge[:material/smart_toy: {label}]")
+        if payload.get("reranked"):
+            badges.append(":gray-badge[:material/sort: reranked]")
         st.markdown(" ".join(badges))
         st.markdown(render_answer_text(payload.get("answer") or "No generated answer."))
         if payload.get("removed_citations"):
@@ -289,6 +301,9 @@ if payload:
         title = f"**{source['label']}** · {source['source_name']}" + (f" · {pages}" if pages else "")
         with st.expander(f"{title} · relevance {source['score']:.0%}"):
             st.progress(min(max(source["score"], 0.0), 1.0))
+            if source.get("rerank_score") is not None:
+                st.caption(f"Reranker score {source['rerank_score']:.2f} (higher is more relevant; "
+                           "sources are listed in reranker order)")
             st.write(source["text"])
 
 history = [item for item in st.session_state.history if item is not payload]

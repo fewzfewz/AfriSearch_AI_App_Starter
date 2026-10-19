@@ -20,7 +20,7 @@ import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from backend import llm
 
@@ -58,6 +58,13 @@ QUERY_PREFIX = PASSAGE_PREFIX = ""
 INDEX_VERSION = ""
 # Passages scoring below this cosine similarity are treated as irrelevant.
 MIN_SCORE = 0.0
+# A cross-encoder reads the question and each of the best RERANK_CANDIDATES passages
+# together and reorders them. On the evaluation set it raised "right document ranked
+# first" from 32/39 to 36/39, at about 1-2 s per question on a laptop CPU.
+# AFRISEARCH_RERANKER=off turns it off; requests can also skip it with rerank=false.
+DEFAULT_RERANKER = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+RERANKER_ID = ""  # set by set_reranker(); empty means off
+RERANK_CANDIDATES = 12
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("afrisearch")
@@ -68,6 +75,7 @@ rebuild_lock = threading.Lock()
 # Guards lazy embedder loading so concurrent first requests load it once.
 model_lock = threading.Lock()
 embedder: SentenceTransformer | None = None
+reranker: CrossEncoder | None = None
 chunks: list[dict[str, Any]] = []
 chunk_embeddings: np.ndarray | None = None
 
@@ -109,6 +117,8 @@ class AskRequest(BaseModel):
     generate_answer: bool = True
     # One of llm.PROVIDERS; defaults to AFRISEARCH_DEFAULT_PROVIDER or the first available.
     provider: str | None = None
+    # Reorder passages with the reranker; defaults to on when one is configured.
+    rerank: bool | None = None
 
 
 def get_embedder() -> SentenceTransformer:
@@ -139,6 +149,27 @@ def set_embedder(model_id: str) -> None:
 
 
 set_embedder(os.getenv("AFRISEARCH_EMBEDDER", DEFAULT_EMBEDDER))
+
+
+def get_reranker() -> CrossEncoder:
+    global reranker
+    if reranker is None:
+        with model_lock:
+            if reranker is None:
+                reranker = CrossEncoder(RERANKER_ID)
+    return reranker
+
+
+def set_reranker(model_id: str) -> None:
+    """Choose the reranking model; an empty id or "off" turns reranking off."""
+    global RERANKER_ID, reranker
+    model_id = model_id.strip()
+    with model_lock:
+        RERANKER_ID = "" if model_id.lower() in {"", "off", "none", "0", "false"} else model_id
+        reranker = None
+
+
+set_reranker(os.getenv("AFRISEARCH_RERANKER", DEFAULT_RERANKER))
 
 
 def load_index_from_disk() -> None:
@@ -394,9 +425,20 @@ def remove_document(source_id: str) -> int:
         return removed
 
 
-def retrieve(question: str, top_k: int = 4, min_score: float | None = None) -> list[dict[str, Any]]:
+def retrieve(
+    question: str, top_k: int = 4, min_score: float | None = None, rerank: bool | None = None,
+) -> list[dict[str, Any]]:
+    """Best passages for the question, most relevant first.
+
+    Passages must reach `min_score` semantic similarity. If reranking is on (the
+    default when a reranker is configured), the reranker reorders the best
+    candidates; `score` stays the semantic similarity either way.
+    """
     if min_score is None:
         min_score = MIN_SCORE
+    if rerank is None:
+        rerank = bool(RERANKER_ID)
+    rerank = rerank and bool(RERANKER_ID)
     with index_lock:
         if not chunks or chunk_embeddings is None:
             return []
@@ -415,16 +457,23 @@ def retrieve(question: str, top_k: int = 4, min_score: float | None = None) -> l
         show_progress_bar=False,
     ).astype(np.float32)
     scores = current_embeddings @ vector
-    indices = np.argsort(scores)[::-1][:top_k]
+    limit = max(top_k, RERANK_CANDIDATES) if rerank else top_k
     results = []
-    for idx in indices:
+    for idx in np.argsort(-scores, kind="stable")[:limit]:
         score = float(scores[int(idx)])
         if score < min_score:
             break  # scores are sorted, so the rest are lower too
         item = dict(current_chunks[int(idx)])
         item["score"] = score
         results.append(item)
-    return results
+    if rerank and results:
+        rerank_scores = get_reranker().predict(
+            [(question, item["text"]) for item in results], show_progress_bar=False,
+        )
+        for item, value in zip(results, rerank_scores):
+            item["rerank_score"] = float(value)
+        results.sort(key=lambda item: item["rerank_score"], reverse=True)
+    return results[:top_k]
 
 
 CITATION_GROUP = re.compile(r"\[\s*(S\d+(?:\s*,\s*S\d+)*)\s*\]")
@@ -507,7 +556,11 @@ def list_providers():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "indexed_chunks": len(chunks), "embedder": EMBEDDER_ID}
+    return {"status": "ok", "indexed_chunks": len(chunks), **search_settings()}
+
+
+def search_settings() -> dict[str, Any]:
+    return {"embedder": EMBEDDER_ID, "reranker": RERANKER_ID or None}
 
 
 @app.post("/documents/upload")
@@ -584,7 +637,7 @@ def list_documents():
             "indexed_chunks": len(chunks),
             # Documents indexed with another search model or chunking; re-index to search them.
             "stale_documents": len(stale),
-            "embedder": EMBEDDER_ID}
+            **search_settings()}
 
 
 @app.delete("/documents/{source_id}")
@@ -607,7 +660,7 @@ def ask(request: AskRequest):
             detail="The search model or chunk settings changed. Re-index the documents "
                    "(Upload and index, or POST /documents/index) before asking.",
         )
-    sources = retrieve(request.question, request.top_k)
+    sources = retrieve(request.question, request.top_k, rerank=request.rerank)
     answer = None
     removed_citations: list[str] = []
     provider = None
@@ -633,6 +686,7 @@ def ask(request: AskRequest):
         "provider": provider,
         "model": llm.PROVIDERS[provider].model if provider else None,
         "removed_citations": removed_citations,
+        "reranked": any("rerank_score" in item for item in sources),
         "sources": [
             {
                 "label": f"S{i}",
@@ -640,6 +694,7 @@ def ask(request: AskRequest):
                 "page": item["page"],
                 "page_end": item.get("page_end", item["page"]),
                 "score": round(item["score"], 4),
+                "rerank_score": round(item["rerank_score"], 4) if "rerank_score" in item else None,
                 "text": item["text"],
             }
             for i, item in enumerate(sources, start=1)

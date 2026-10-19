@@ -58,6 +58,9 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "embedder", embedder)
     # The fake embedder scores on a MiniLM-like scale, whatever the default model is.
     monkeypatch.setattr(main, "MIN_SCORE", 0.2)
+    # No reranker unless a test installs a fake one (see test_reranker.py).
+    monkeypatch.setattr(main, "RERANKER_ID", "")
+    monkeypatch.setattr(main, "reranker", None)
     return main, embedder
 
 

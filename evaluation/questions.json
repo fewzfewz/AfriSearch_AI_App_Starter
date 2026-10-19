@@ -80,5 +80,16 @@
    "source": "solar_home_systems.txt", "must_include": [["five to ten", "5 to 10", "5-10", "biyar zuwa goma"]]},
 
   {"id": "none-am-world-cup", "lang": "am", "question": "የ2010 የዓለም ዋንጫን ማን አሸነፈ?", "source": null},
-  {"id": "none-sw-election", "lang": "sw", "question": "Rais wa kwanza wa Tanzania alikuwa nani?", "source": null}
+  {"id": "none-sw-election", "lang": "sw", "question": "Rais wa kwanza wa Tanzania alikuwa nani?", "source": null},
+
+  {"id": "kw-sb350-warranty", "lang": "en", "question": "How long is the warranty on the SunBox SB-350?",
+   "source": "sunbox_sb350.txt", "must_include": [["2-year", "2 year", "two year", "two-year"]]},
+  {"id": "kw-sb500-battery", "lang": "en", "question": "What is the battery capacity of the SB-500 kit?",
+   "source": "sunbox_sb500.txt", "must_include": [["307"]]},
+  {"id": "kw-sb200-price", "lang": "en", "question": "How much does the SB-200 cost?",
+   "source": "sunbox_sb200.txt", "must_include": [["18,500", "18500", "18 500"]]},
+  {"id": "kw-sb500-lights-sw", "lang": "sw", "question": "SunBox SB-500 inakuja na taa ngapi?",
+   "source": "sunbox_sb500.txt", "must_include": [["6", "six", "sita"]]},
+  {"id": "kw-sb200-hours", "lang": "en", "question": "For how many hours does the SB-200 run its lights on a full charge?",
+   "source": "sunbox_sb200.txt", "must_include": [["6", "six"]]}
 ]

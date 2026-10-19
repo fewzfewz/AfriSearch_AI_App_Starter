@@ -7,6 +7,7 @@ finds the right document and whether each answer model gets the facts right.
 Examples, from the project root:
     python evaluation/run_eval.py --retrieval-only
     python evaluation/run_eval.py --retrieval-only --embedders sentence-transformers/all-MiniLM-L6-v2 intfloat/multilingual-e5-small
+    python evaluation/run_eval.py --retrieval-only --modes semantic rerank
     python evaluation/run_eval.py --providers qwen-small
     python evaluation/run_eval.py --providers claude chatgpt gemini --top-k 6
     python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --providers qwen-small
@@ -32,6 +33,13 @@ from backend import main  # noqa: E402  (also sets HF_HOME)
 from evaluation.scoring import grade, retrieval_rank  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+MODES = ("semantic", "rerank")
+
+
+def set_mode(mode: str, reranker_id: str | None) -> None:
+    wanted = reranker_id if mode == "rerank" else ""
+    if main.RERANKER_ID != wanted:
+        main.set_reranker(wanted)
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--questions", type=Path, default=HERE / "questions.json")
     parser.add_argument("--embedders", nargs="+", default=[main.EMBEDDER_ID],
                         help="search models to compare (answers use the first one)")
+    parser.add_argument("--modes", nargs="+", choices=MODES,
+                        default=["rerank" if main.RERANKER_ID else "semantic"],
+                        help="search modes to compare (answers use the first one); "
+                             "rerank = semantic search reordered by the --reranker model")
+    parser.add_argument("--reranker", default=main.RERANKER_ID or main.DEFAULT_RERANKER,
+                        help="reranking model for the 'rerank' mode (default: AFRISEARCH_RERANKER)")
     parser.add_argument("--providers", nargs="*", default=[], help="answer models to score, e.g. qwen-small claude")
     parser.add_argument("--retrieval-only", action="store_true", help="score search only; no answer models")
     parser.add_argument("--top-k", type=int, default=4, help="passages retrieved per question")
@@ -74,10 +88,15 @@ def percent(part: int, whole: int) -> str:
 
 
 def suggest_cutoff(questions: list[dict[str, Any]], raw: dict[str, list]) -> dict[str, Any]:
-    """Compare top passage scores of answerable vs off-topic questions (before any cutoff)."""
-    answerable = [raw[q["id"]][0]["score"] for q in questions
-                  if q.get("source") and raw[q["id"]] and raw[q["id"]][0]["source_name"] == q["source"]]
-    off_topic = [raw[q["id"]][0]["score"] for q in questions if not q.get("source") and raw[q["id"]]]
+    """Compare semantic scores of answerable vs off-topic questions (before any cutoff).
+
+    Uses the best semantic score among the retrieved passages, since with a
+    reranker the first passage is not always the highest scoring one.
+    """
+    answerable = [max(s["score"] for s in raw[q["id"]] if s["source_name"] == q["source"])
+                  for q in questions
+                  if q.get("source") and any(s["source_name"] == q["source"] for s in raw[q["id"]])]
+    off_topic = [max(s["score"] for s in raw[q["id"]]) for q in questions if not q.get("source") and raw[q["id"]]]
     if not answerable or not off_topic:
         return {}
     lowest_answerable, highest_off_topic = min(answerable), max(off_topic)
@@ -91,7 +110,7 @@ def suggest_cutoff(questions: list[dict[str, Any]], raw: dict[str, list]) -> dic
 
 
 def score_retrieval(questions: list[dict[str, Any]], retrieved: dict[str, list],
-                    raw: dict[str, list]) -> dict[str, Any]:
+                    raw: dict[str, list], mode: str) -> dict[str, Any]:
     answerable = [q for q in questions if q.get("source")]
     unanswerable = [q for q in questions if not q.get("source")]
     ranks = {q["id"]: retrieval_rank(retrieved[q["id"]], q["source"]) for q in answerable}
@@ -102,6 +121,8 @@ def score_retrieval(questions: list[dict[str, Any]], retrieved: dict[str, list],
         counts[1] += 1
     return {
         "embedder": main.EMBEDDER_ID,
+        "mode": mode,
+        "reranker": main.RERANKER_ID or None,
         "min_score": main.MIN_SCORE,
         "answerable": len(answerable),
         "hit_at_1": sum(rank == 1 for rank in ranks.values()),
@@ -158,7 +179,8 @@ def print_retrieval(retrievals: list[dict[str, Any]], top_k: int) -> None:
     print(f"\nSearch (top {top_k} passages)")
     languages = sorted({lang for r in retrievals for lang in r["hit_at_k_by_language"]})
     for r in retrievals:
-        print(f"\n  {r['embedder']}  (relevance cutoff {r['min_score']})")
+        mode = f"rerank with {r['reranker']}" if r["reranker"] else r["mode"]
+        print(f"\n  {r['embedder']} · {mode}  (relevance cutoff {r['min_score']})")
         lines = [
             ("right document ranked first", percent(r["hit_at_1"], r["answerable"])),
             (f"right document in top {top_k}", percent(r["hit_at_k"], r["answerable"])),
@@ -170,7 +192,7 @@ def print_retrieval(retrievals: list[dict[str, Any]], top_k: int) -> None:
             lines.append((f"  in top {top_k}, questions in '{lang}'", percent(counts["hits"], counts["total"])))
         cutoff = r["cutoff"]
         if cutoff:
-            lines.append(("lowest score of a correct top passage", f"{cutoff['lowest_answerable_top_score']:.3f}"))
+            lines.append(("lowest score of a correct passage", f"{cutoff['lowest_answerable_top_score']:.3f}"))
             lines.append(("highest score of an off-topic passage", f"{cutoff['highest_off_topic_top_score']:.3f}"))
             lines.append(("suggested cutoff", str(cutoff["suggested_min_score"] or "none (scores overlap)")))
         for label, value in lines:
@@ -214,18 +236,22 @@ def main_cli() -> None:
         main.set_embedder(embedder_id)
         with tempfile.TemporaryDirectory(prefix="afrisearch-eval-") as workdir:
             build_index(args.corpus, Path(workdir))
-            raw = {q["id"]: main.retrieve(q["question"], args.top_k, min_score=-1.0) for q in questions}
-            retrieved = {q["id"]: [s for s in raw[q["id"]] if s["score"] >= main.MIN_SCORE] for q in questions}
-            retrievals.append(score_retrieval(questions, retrieved, raw))
+            for mode_number, mode in enumerate(args.modes):
+                set_mode(mode, args.reranker)
+                retrieved = {q["id"]: main.retrieve(q["question"], args.top_k) for q in questions}
+                raw = {q["id"]: main.retrieve(q["question"], args.top_k, min_score=-1.0) for q in questions}
+                retrievals.append(score_retrieval(questions, retrieved, raw, mode))
+                if mode_number == 0:
+                    answer_sources = retrieved
 
-            if position == 0:  # answer models use the first search model
+            if position == 0:  # answer models use the first search model and mode
                 for provider_id in providers:
                     reason = llm.PROVIDERS[provider_id].unavailable_reason()
                     if reason:
                         print(f"\nSkipping {provider_id}: {reason}")
                         continue
                     print(f"\nAsking {provider_id} ({llm.PROVIDERS[provider_id].model})...")
-                    answer_results.append(score_provider(provider_id, questions, retrieved))
+                    answer_results.append(score_provider(provider_id, questions, answer_sources))
 
     print_retrieval(retrievals, args.top_k)
     print_answers(answer_results)
@@ -234,7 +260,7 @@ def main_cli() -> None:
     report_path = args.output / f"eval-{datetime.now():%Y%m%d-%H%M%S}.json"
     report_path.write_text(json.dumps({
         "settings": {"corpus": str(args.corpus), "questions": str(args.questions), "top_k": args.top_k,
-                     "embedders": args.embedders},
+                     "embedders": args.embedders, "modes": args.modes, "reranker": args.reranker},
         "retrieval": retrievals,
         "providers": answer_results,
     }, indent=2, ensure_ascii=False), encoding="utf-8")

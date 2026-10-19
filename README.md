@@ -7,6 +7,7 @@ A local app for asking questions about your own documents. Upload PDF or TXT fil
 - Extract text with page numbers, split it into sentence-aware chunks that can span pages, and embed them
 - Index only new files (a full rebuild is optional), and delete documents from the UI
 - Multilingual semantic search (94 languages, including Amharic, Swahili, Somali, Hausa and Afaan Oromo), so a question in one language can find a document in another
+- A reranker that rereads the best matches and puts the most relevant passage first (can be switched off per question)
 - A relevance cutoff, so clearly unrelated passages are never passed to the model
 - Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question
 - Citations like `[S1]` link to the source passages; citations that don't match a source are removed
@@ -24,7 +25,7 @@ evaluation/       question set with known answers + scoring script
 data/             uploads/, index.json, embeddings.npy, manifest.json (created at runtime)
 ```
 
-- **Search model:** `intfloat/multilingual-e5-small` (see [Search model](#search-model))
+- **Search model:** `intfloat/multilingual-e5-small`, with the `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` reranker (see [Search](#search))
 - **Answer models:** see [Answer models](#answer-models)
 - **Storage:** local files under `data/` (a starter implementation, not production storage)
 
@@ -32,6 +33,7 @@ data/             uploads/, index.json, embeddings.npy, manifest.json (created a
 
 - Python 3.10+
 - Internet access on the first run, to install packages and download model weights
+- About 1 GB of free disk space for the search model and reranker (about 470 MB each), plus more for any local answer model
 - For **Claude / ChatGPT / Gemini**: an API key from the provider
 - For **Qwen 3.8, Gemma 4 and gpt-oss**: an NVIDIA GPU (see [GPU memory](#local-models))
 - **Qwen 2.5 0.5B** runs on an ordinary laptop CPU, with no key or GPU
@@ -104,8 +106,8 @@ The UI opens at http://localhost:8501.
 
 1. **Add documents:** in the sidebar, choose `.pdf` or `.txt` files and click **Upload and index**. Only new files are processed. The sidebar shows the document and chunk counts, the indexed files (🗑 deletes one), and any file that couldn't be indexed.
 2. **Pick a model:** **Answer model** lists the models that are ready to use. A badge shows where the selected one runs (Cloud API, Local · GPU or Local · CPU). **Other models** explains why the rest are unavailable, for example a missing API key or no GPU.
-3. **Ask:** type a question and press **Ask AfriSearch** or **Ctrl+Enter**. **Passages to retrieve** sets how many passages the model sees.
-4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each passage shows its file, pages and relevance. Always check important claims against them.
+3. **Ask:** type a question and press **Ask AfriSearch** or **Ctrl+Enter**. **Passages to retrieve** sets how many passages the model sees. **Rerank passages** (on by default) puts the most relevant passages first; turn it off for slightly faster searches.
+4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each passage shows its file, pages and relevance (and its reranker score when reranking was used). Always check important claims against them.
 5. **Earlier answers:** your last 10 answers stay available in the session. Click **Show** to bring one back.
 
 **Advanced → Rebuild full index** processes every document again. You rarely need it: when the search model or chunk settings change, the sidebar shows which documents are out of date, and **Re-index now** (or **Upload and index**) updates just those.
@@ -144,20 +146,47 @@ Local models download from Hugging Face the first time you use them (to `~/.cach
 - **Qwen 2.5 0.5B on a laptop:** on CPU it loads in float32, which most laptop CPUs run much faster than bfloat16. On a 4-core laptop CPU, the first question takes about 30–90 s while the model loads, and later answers take about 5–10 s. Answers to direct questions are usually right, but the model often leaves out citation labels, so check the sources. The 0.5B model only needs transformers 5.x; the 5.8 minimum in `requirements.txt` is for Qwen 3.8.
 - **Offline use:** once a model is downloaded, set `HF_HUB_OFFLINE=1` to start without contacting Hugging Face.
 
-## Search model
+## Search
 
-The default search model is [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (MIT licence, about 470 MB, downloads on first use). It understands 94 languages and matches questions to documents across languages. On the evaluation set it compares with the previous English-focused default like this:
+Search runs in two steps:
 
-| Right document in the top 4 | `all-MiniLM-L6-v2` | `multilingual-e5-small` |
-|---|---|---|
-| English questions | 19/21 | 21/21 |
-| Amharic | 3/6 | 6/6 |
-| Swahili | 2/4 | 4/4 |
-| Somali, Afaan Oromo, Hausa | 0/3 | 2/3 |
-| **All questions** | **24/34 (71%)** | **33/34 (97%)** |
+1. **Find candidates.** The search model turns the question and every passage into vectors and keeps the passages most similar in meaning. Passages below the relevance cutoff are dropped.
+2. **Rerank.** The reranker reads the question together with each of the best 12 candidates and reorders them, so the passage that actually answers the question comes first.
+
+Measured with `python evaluation/run_eval.py --retrieval-only --embedders sentence-transformers/all-MiniLM-L6-v2 intfloat/multilingual-e5-small --modes semantic rerank` on the 39 answerable evaluation questions:
+
+| | `all-MiniLM-L6-v2` | `multilingual-e5-small` | `multilingual-e5-small` + reranker |
+|---|---|---|---|
+| Right document **ranked first** | 28/39 | 32/39 | **36/39** |
+| Right document in the top 4 | 29/39 | **38/39** | **38/39** |
+| … English questions (25) | 23 | 25 | 25 |
+| … Amharic (6) | 3 | 6 | 6 |
+| … Swahili (5) | 3 | 5 | 5 |
+| … Somali, Afaan Oromo, Hausa (1 each) | 0 | 2 | 2 |
+
+### Search model
+
+The default search model is [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (MIT licence, about 470 MB, downloads on first use). It understands 94 languages and matches questions to documents across languages, for example an English question to a Swahili guide.
 
 - **Relevance cutoff:** E5 models score even unrelated text fairly high (about 0.7–0.83 here), so the cutoff is 0.75 for them instead of 0.2. Cross-language questions often score 0.75–0.80, and a higher cutoff started dropping correct passages. The trade-off is that only some off-topic questions are filtered out; the answer model is told to say when the documents don't cover a question. To tune the cutoff for your own documents, run the evaluation with your own questions and look at the *suggested cutoff* lines.
 - **Switching models:** set `AFRISEARCH_EMBEDDER`, for example `sentence-transformers/all-MiniLM-L6-v2` for a smaller, faster English-only setup. Documents indexed with another model are left out of search, because their vectors can't be compared, and the sidebar shows **Re-index now** to update them.
+
+### Reranker
+
+The default reranker is [`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`](https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) (Apache 2.0, about 470 MB, multilingual). It downloads the first time a question is reranked.
+
+- **Speed:** on a 4-core laptop CPU the first reranked question takes about 10 s while the model loads; after that reranking adds about 0.5 s per question.
+- **What it changes:** only the order of the passages. The relevance cutoff still uses the search model's score, and **relevance** in the UI still shows that score. Reranker scores didn't separate answerable from off-topic questions reliably enough to use as a cutoff.
+- **Turning it off:** use the **Rerank passages** toggle per question, send `"rerank": false` to `/ask`, or set `AFRISEARCH_RERANKER=off` to never load it. `AFRISEARCH_RERANKER` also takes another cross-encoder model id.
+
+### Tried and not adopted: keyword (hybrid) search
+
+Merging a keyword ranking (BM25) with the semantic ranking is a common way to catch exact names, numbers and product codes. It was tested here and left out:
+
+- Keyword matching only works within one language, so it pushed same-language documents above the right answer for cross-language questions. With rank fusion, "right document in the top 4" dropped from 38/39 to 36/39, even with the keyword ranking at a quarter of the weight.
+- It brought no gain on questions built to need exact matches (`kw-*` in the evaluation set: three spec sheets that differ only in model code and numbers). The multilingual search model already ranked the right sheet first for all of them, and with MiniLM it made no difference.
+
+If your documents are full of codes the search model confuses, measure it on your own questions before adding it.
 
 ## Configuration reference
 
@@ -168,6 +197,7 @@ The default search model is [`intfloat/multilingual-e5-small`](https://huggingfa
 | `AFRISEARCH_EMBEDDER` | `intfloat/multilingual-e5-small` | Search model; documents must be re-indexed after changing it |
 | `AFRISEARCH_MIN_SCORE` | `0.75` for E5 models, `0.2` otherwise | Passages less similar than this are ignored |
 | `AFRISEARCH_QUERY_PREFIX` / `AFRISEARCH_PASSAGE_PREFIX` | `query: ` / `passage: ` for E5 models | Text added before questions / passages when embedding |
+| `AFRISEARCH_RERANKER` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Reranking model; `off` disables reranking |
 | `AFRISEARCH_LOCAL_QUANTIZE` | off | `4bit` loads Qwen 3.8 and Gemma 4 in 4-bit |
 | `AFRISEARCH_LOCAL_MAX_NEW_TOKENS` | `512` | Answer length cap for local GPU models |
 | `AFRISEARCH_ALLOW_CPU` | off | `1` lets GPU models run on CPU |
@@ -181,15 +211,15 @@ The model-name variables are listed in [Answer models](#answer-models).
 |---|---|---|
 | `POST` | `/documents/upload` | Upload files (multipart field `files`) |
 | `POST` | `/documents/index` | Index new uploads; `?full=true` rebuilds everything. Returns failed files |
-| `GET` | `/documents` | Indexed documents and chunk count |
+| `GET` | `/documents` | Indexed documents, chunk count, documents needing re-indexing, search model and reranker |
 | `DELETE` | `/documents/{source_id}` | Delete a document and its chunks |
 | `GET` | `/providers` | Answer models, whether each is available, and why not |
-| `POST` | `/ask` | `{"question", "top_k", "provider"}` → answer, sources, removed citations |
-| `GET` | `/health` | Status and chunk count |
+| `POST` | `/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer"}` → answer, sources (with `score` and `rerank_score`), whether they were reranked, removed citations |
+| `GET` | `/health` | Status, chunk count, search model and reranker |
 
 ## Testing
 
-The tests use a fake search model, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
+The tests use a fake search model, a fake reranker, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
 
 ```bash
 pip install -r requirements-dev.txt   # adds pytest and httpx
@@ -201,20 +231,24 @@ pytest -q
 | `tests/test_text_processing.py` | Chunking, citation cleanup, page formatting |
 | `tests/test_documents.py` | Upload, duplicate rejection, incremental and full indexing, failed files, delete, reload from disk |
 | `tests/test_ask.py` | `/ask`: cited answers, relevance cutoff, provider selection and errors |
+| `tests/test_search_model.py` | Per-model prefixes and cutoffs, environment overrides, re-indexing after a model change |
+| `tests/test_reranker.py` | Reranking order, candidate count, cutoff before reranking, turning reranking off |
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
+| `tests/test_evaluation_scoring.py` | The evaluation script's grading rules |
 
 The Claude, ChatGPT and Gemini tests are skipped when their SDK isn't installed.
 
 ## Evaluating answer quality
 
-`evaluation/` scores search and the answer models on questions with known answers. It shows whether a change actually helps, for example a different search model, a different `AFRISEARCH_MIN_SCORE`, or Claude versus a local model.
+`evaluation/` scores search and the answer models on questions with known answers. It shows whether a change actually helps, for example a different search model, the reranker, a different `AFRISEARCH_MIN_SCORE`, or Claude versus a local model.
 
-- **Sample documents:** `evaluation/corpus/`, six short illustrative guides: four in English (solar maintenance, grain storage, mobile money safety, drinking water), one in Amharic (coffee) and one in Swahili (chickens).
-- **Questions:** `evaluation/questions.json`, 34 questions the documents answer and 6 they don't. 15 are in Amharic, Swahili, Somali, Afaan Oromo or Hausa, and some ask in one language about a document in another.
+- **Sample documents:** `evaluation/corpus/`, nine short illustrative documents: four English guides (solar maintenance, grain storage, mobile money safety, drinking water), one Amharic guide (coffee), one Swahili guide (chickens), and three near-identical product sheets for a fictional solar kit that differ only in model code and numbers.
+- **Questions:** `evaluation/questions.json`, 39 questions the documents answer and 6 they don't. 16 are in Amharic, Swahili, Somali, Afaan Oromo or Hausa, some ask in one language about a document in another, and five (`kw-*`) can only be answered by telling the product sheets apart.
 
 ```bash
 python evaluation/run_eval.py --retrieval-only                 # search only, takes seconds
 python evaluation/run_eval.py --retrieval-only --embedders sentence-transformers/all-MiniLM-L6-v2 intfloat/multilingual-e5-small
+python evaluation/run_eval.py --retrieval-only --modes semantic rerank   # with and without the reranker
 python evaluation/run_eval.py --providers qwen-small           # one answer model
 python evaluation/run_eval.py --providers claude chatgpt gemini --top-k 6
 ```
@@ -229,7 +263,7 @@ The script indexes the documents into a temporary folder, so your `data/` folder
 | suggested cutoff | Lowest score of a correct top passage vs. highest score of an off-topic one; a cutoff is suggested only if they don't overlap |
 | correct | The answer contains every required fact (accepted wordings are listed per fact) |
 | cites right doc | The answer cites an `[S#]` label from the document that answers the question |
-| says not covered | For the 4 off-topic questions: the model said the documents don't cover them instead of inventing an answer |
+| says not covered | For the 6 off-topic questions: the model said the documents don't cover them instead of inventing an answer |
 
 The grading uses keyword checks, not an AI judge. It is free and gives the same result every time, but it can mark an oddly worded correct answer as wrong, so read the listed failures.
 
@@ -254,6 +288,7 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 - **Out of GPU memory:** set `AFRISEARCH_LOCAL_QUANTIZE=4bit`, or use gpt-oss-20b.
 - **Only "Qwen 2.5 0.5B" is offered:** that's expected on a machine with no API keys and no NVIDIA GPU. Add keys (setup step 3) to enable Claude, ChatGPT or Gemini; for those, also install `anthropic`, `openai` and `google-genai` into the environment.
 - **The first local answer is slow:** the model loads on the first question. Later questions are much faster.
+- **The first search is slow:** the search model and reranker load on first use (about 10 s on a laptop CPU, plus the download the very first time). Set `AFRISEARCH_RERANKER=off` if you don't want the reranker.
 
 ## Notes and limitations
 
