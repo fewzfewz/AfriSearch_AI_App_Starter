@@ -2,6 +2,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 pypdf>=5.0
+# OCR for scanned PDFs and photos; also needs the Tesseract program (see README)
+pypdfium2>=4.30
+pytesseract>=0.3.10
 sentence-transformers>=5.2
 transformers>=5.8
 Pillow  # needed by the multimodal processors of Qwen3.8 and Gemma 4

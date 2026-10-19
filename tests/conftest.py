@@ -61,6 +61,9 @@ def app_env(tmp_path, monkeypatch):
     # No reranker unless a test installs a fake one (see test_reranker.py).
     monkeypatch.setattr(main, "RERANKER_ID", "")
     monkeypatch.setattr(main, "reranker", None)
+    # OCR is unavailable unless a test installs a fake one (see test_ocr.py), so
+    # results don't depend on whether Tesseract is installed on this machine.
+    monkeypatch.setattr(main, "ocr_status", lambda: ([], "Tesseract is not installed (test)."))
     return main, embedder
 
 

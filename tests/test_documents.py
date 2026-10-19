@@ -87,7 +87,7 @@ def test_unreadable_and_textless_pdfs_are_reported(client):
     result = client.post("/documents/index").json()
     failed = {item["filename"]: item["error"] for item in result["failed"]}
     assert set(failed) == {"scan.pdf", "broken.pdf"}
-    assert "No extractable text" in failed["scan.pdf"]
+    assert "scanned PDF and needs OCR" in failed["scan.pdf"]
     assert "Could not read file" in failed["broken.pdf"]
     assert result["new_documents"] == ["guide.txt"]
 

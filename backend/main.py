@@ -18,6 +18,7 @@ if "HF_HOME" not in os.environ:
 
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from sentence_transformers import CrossEncoder, SentenceTransformer
@@ -48,7 +49,14 @@ EMBEDDER_SETTINGS = {
 }
 DEFAULT_SETTINGS = {"query_prefix": "", "passage_prefix": "", "min_score": 0.2}
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf", ".txt"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
+ALLOWED_EXTENSIONS = {".pdf", ".txt"} | IMAGE_EXTENSIONS
+# OCR (Tesseract) reads scanned PDF pages and photos of documents. Languages are
+# Tesseract codes joined with "+"; those not installed are skipped.
+OCR_LANGUAGES = os.getenv("AFRISEARCH_OCR_LANGS", "eng+amh+swa")
+OCR_DPI = 300
+# PDF pages with less extractable text than this are treated as scanned images.
+MIN_PAGE_CHARS = 25
 CHUNK_SIZE = 180  # target words per chunk
 CHUNK_OVERLAP = 35  # words of whole sentences repeated from the previous chunk
 # Set by set_embedder(): the search model, its prefixes, and the INDEX_VERSION
@@ -257,24 +265,91 @@ def chunk_document(
     return result
 
 
-def extract_file(path: Path) -> list[tuple[int | None, str]]:
-    """Return (page, text) pairs; page is None for TXT files."""
+class OcrUnavailable(RuntimeError):
+    """A file needs OCR but Tesseract (or its Python packages) is not installed."""
+
+
+def ocr_status() -> tuple[list[str], str | None]:
+    """(languages OCR will use, why OCR is unavailable or None)."""
+    try:
+        import pytesseract
+
+        installed = set(pytesseract.get_languages(config=""))
+    except ImportError:
+        return [], "Install the 'pytesseract' and 'pypdfium2' packages."
+    except Exception:  # TesseractNotFoundError and friends
+        return [], "Install Tesseract OCR (for example: sudo apt install tesseract-ocr tesseract-ocr-amh)."
+    wanted = [lang for lang in OCR_LANGUAGES.split("+") if lang]
+    languages = [lang for lang in wanted if lang in installed] or (["eng"] if "eng" in installed else [])
+    if not languages:
+        return [], f"No Tesseract language data for {OCR_LANGUAGES} is installed."
+    return languages, None
+
+
+def ocr_image(image: Any) -> str:
+    """Read the text in a PIL image with Tesseract."""
+    languages, reason = ocr_status()
+    if reason:
+        raise OcrUnavailable(reason)
+    import pytesseract
+
+    return pytesseract.image_to_string(image.convert("L"), lang="+".join(languages)).strip()
+
+
+def ocr_pdf_page(path: Path, page_number: int) -> str:
+    try:
+        import pypdfium2
+    except ImportError as exc:
+        raise OcrUnavailable("Install the 'pypdfium2' package.") from exc
+    pdf = pypdfium2.PdfDocument(str(path))
+    try:
+        image = pdf[page_number - 1].render(scale=OCR_DPI / 72).to_pil()
+    finally:
+        pdf.close()
+    return ocr_image(image)
+
+
+def extract_file(path: Path) -> tuple[list[tuple[int | None, str]], set[int | None]]:
+    """Return (page, text) pairs and the pages whose text came from OCR.
+
+    Page is None for TXT files and images. PDF pages without a usable text layer
+    (scans) and image files are read with OCR; raises OcrUnavailable if they need
+    it and it isn't installed.
+    """
     suffix = path.suffix.lower()
     if suffix == ".txt":
         text = path.read_text(encoding="utf-8", errors="replace").strip()
-        return [(None, text)] if text else []
+        return ([(None, text)] if text else []), set()
+    if suffix in IMAGE_EXTENSIONS:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            text = ocr_image(image)
+        return ([(None, text)] if text else []), {None}
     if suffix == ".pdf":
         reader = PdfReader(str(path))
-        pages = []
+        pages, ocr_pages = [], set()
         for page_number, page in enumerate(reader.pages, start=1):
             text = (page.extract_text() or "").strip()
+            if len(text) < MIN_PAGE_CHARS:
+                scanned = ocr_pdf_page(path, page_number)
+                if len(scanned) > len(text):
+                    text = scanned
+                    ocr_pages.add(page_number)
             if text:
                 pages.append((page_number, text))
-        return pages
-    raise ValueError("Only PDF and TXT files are supported.")
+        return pages, ocr_pages
+    raise ValueError("Only PDF, TXT and image files are supported.")
 
 
-def create_chunks(source_id: str, source_name: str, pages: list[tuple[int | None, str]]) -> list[dict[str, Any]]:
+def page_range(first: int | None, last: int | None) -> set[int | None]:
+    return {None} if first is None else set(range(first, (last or first) + 1))
+
+
+def create_chunks(
+    source_id: str, source_name: str, pages: list[tuple[int | None, str]],
+    ocr_pages: set[int | None] = frozenset(),
+) -> list[dict[str, Any]]:
     return [
         {
             "chunk_id": f"{source_id}-{idx}",
@@ -283,6 +358,7 @@ def create_chunks(source_id: str, source_name: str, pages: list[tuple[int | None
             "page": first_page,
             "page_end": last_page,
             "index_version": INDEX_VERSION,
+            "ocr": bool(page_range(first_page, last_page) & ocr_pages),
             "text": text,
         }
         for idx, (first_page, last_page, text) in enumerate(chunk_document(pages))
@@ -344,7 +420,12 @@ def _rebuild_index(full: bool) -> dict[str, Any]:
             continue
         name = display_name(path.name, manifest)
         try:
-            pages = extract_file(path)
+            pages, ocr_pages = extract_file(path)
+        except OcrUnavailable as exc:
+            what = "This image" if path.suffix.lower() in IMAGE_EXTENSIONS else "This looks like a scanned PDF and"
+            failed.append({"source_id": path.name, "filename": name,
+                           "error": f"{what} needs OCR, which is not available: {exc}"})
+            continue
         except Exception as exc:
             logger.warning("Could not process %s: %s", path.name, exc)
             failed.append({"source_id": path.name, "filename": name, "error": f"Could not read file: {exc}"})
@@ -353,10 +434,10 @@ def _rebuild_index(full: bool) -> dict[str, Any]:
             failed.append({
                 "source_id": path.name,
                 "filename": name,
-                "error": "No extractable text (scanned PDFs need OCR, which is not supported yet).",
+                "error": "No text found, even with OCR. The scan may be blank, handwritten or too blurry.",
             })
             continue
-        new_chunks.extend(create_chunks(path.name, name, pages))
+        new_chunks.extend(create_chunks(path.name, name, pages, ocr_pages))
 
     if new_chunks:
         new_embeddings = get_embedder().encode(
@@ -504,13 +585,13 @@ def format_pages(first: int | None, last: int | None, prefix: str = "") -> str:
     return f"{prefix}page {first}"
 
 
-def generate_answer(question: str, sources: list[dict[str, Any]], provider: str) -> str:
-    if not sources:
-        return (
-            "The indexed documents do not contain passages relevant enough to answer "
-            "this question."
-        )
+NO_SOURCES_ANSWER = (
+    "The indexed documents do not contain passages relevant enough to answer this question."
+)
+SYSTEM_PROMPT = "Be accurate, concise, and grounded in provided evidence."
 
+
+def build_prompt(question: str, sources: list[dict[str, Any]]) -> str:
     source_blocks = []
     for i, item in enumerate(sources, start=1):
         location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
@@ -519,7 +600,7 @@ def generate_answer(question: str, sources: list[dict[str, Any]], provider: str)
         )
     evidence = "\n\n".join(source_blocks)
 
-    prompt = (
+    return (
         "You are AfriSearch, a careful document research assistant.\n"
         "Answer using only the source passages. Cite supported claims with labels such as [S1]. "
         "If the evidence does not answer the question, clearly say that the available documents "
@@ -529,11 +610,12 @@ def generate_answer(question: str, sources: list[dict[str, Any]], provider: str)
         "Write the answer in full sentences, each followed by the label of the passage "
         'that supports it, e.g. "... once a year [S1]."'
     )
-    return llm.generate(
-        provider,
-        "Be accurate, concise, and grounded in provided evidence.",
-        prompt,
-    )
+
+
+def generate_answer(question: str, sources: list[dict[str, Any]], provider: str) -> str:
+    if not sources:
+        return NO_SOURCES_ANSWER
+    return llm.generate(provider, SYSTEM_PROMPT, build_prompt(question, sources))
 
 
 @app.get("/")
@@ -560,7 +642,9 @@ def health():
 
 
 def search_settings() -> dict[str, Any]:
-    return {"embedder": EMBEDDER_ID, "reranker": RERANKER_ID or None}
+    languages, reason = ocr_status()
+    return {"embedder": EMBEDDER_ID, "reranker": RERANKER_ID or None,
+            "ocr": {"available": reason is None, "languages": languages, "reason": reason}}
 
 
 @app.post("/documents/upload")
@@ -579,7 +663,8 @@ async def upload_documents(files: list[UploadFile] = File(...)):
         original_name = Path(upload.filename or "upload.txt").name
         suffix = Path(original_name).suffix.lower()
         if suffix not in ALLOWED_EXTENSIONS:
-            errors.append({"filename": original_name, "error": "Only PDF and TXT are supported."})
+            errors.append({"filename": original_name,
+                           "error": "Only PDF, TXT and images (PNG, JPG, TIFF, WebP, BMP) are supported."})
             continue
 
         content = await upload.read()
@@ -628,12 +713,15 @@ def index_documents(full: bool = False):
 @app.get("/documents")
 def list_documents():
     unique = {}
-    stale = set()
+    stale, ocr = set(), set()
     for item in chunks:
         unique[item["source_id"]] = item["source_name"]
         if item.get("index_version") != INDEX_VERSION:
             stale.add(item["source_id"])
-    return {"documents": [{"source_id": key, "source_name": name} for key, name in unique.items()],
+        if item.get("ocr"):
+            ocr.add(item["source_id"])
+    return {"documents": [{"source_id": key, "source_name": name, "ocr": key in ocr}
+                          for key, name in unique.items()],
             "indexed_chunks": len(chunks),
             # Documents indexed with another search model or chunking; re-index to search them.
             "stale_documents": len(stale),
@@ -650,8 +738,7 @@ def delete_document(source_id: str):
             "message": f"Deleted document and {removed} indexed chunks."}
 
 
-@app.post("/ask")
-def ask(request: AskRequest):
+def check_index_ready() -> None:
     if not chunks or chunk_embeddings is None:
         raise HTTPException(status_code=400, detail="No documents indexed yet. Upload files and call /documents/index.")
     if not any(item.get("index_version") == INDEX_VERSION for item in chunks):
@@ -660,17 +747,54 @@ def ask(request: AskRequest):
             detail="The search model or chunk settings changed. Re-index the documents "
                    "(Upload and index, or POST /documents/index) before asking.",
         )
+
+
+def choose_provider(request: AskRequest) -> str | None:
+    if not request.generate_answer:
+        return None
+    provider = request.provider or llm.default_provider()
+    if provider not in llm.PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or unavailable provider: {provider}. See GET /providers.",
+        )
+    return provider
+
+
+def source_payload(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": f"S{i}",
+            "source_name": item["source_name"],
+            "page": item["page"],
+            "page_end": item.get("page_end", item["page"]),
+            "score": round(item["score"], 4),
+            "rerank_score": round(item["rerank_score"], 4) if "rerank_score" in item else None,
+            "ocr": item.get("ocr", False),
+            "text": item["text"],
+        }
+        for i, item in enumerate(sources, start=1)
+    ]
+
+
+def search_summary(request: AskRequest, provider: str | None, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "question": request.question,
+        "provider": provider,
+        "model": llm.PROVIDERS[provider].model if provider else None,
+        "reranked": any("rerank_score" in item for item in sources),
+        "sources": source_payload(sources),
+    }
+
+
+@app.post("/ask")
+def ask(request: AskRequest):
+    check_index_ready()
+    provider = choose_provider(request)
     sources = retrieve(request.question, request.top_k, rerank=request.rerank)
     answer = None
     removed_citations: list[str] = []
-    provider = None
-    if request.generate_answer:
-        provider = request.provider or llm.default_provider()
-        if provider not in llm.PROVIDERS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown or unavailable provider: {provider}. See GET /providers.",
-            )
+    if provider:
         try:
             answer = generate_answer(request.question, sources, provider)
         except llm.ProviderError as exc:
@@ -680,26 +804,53 @@ def ask(request: AskRequest):
             logger.exception("Answer generation with %s failed", provider)
             raise HTTPException(status_code=502, detail=f"{provider} failed: {exc}") from exc
         answer, removed_citations = clean_citations(answer, len(sources))
-    return {
-        "question": request.question,
-        "answer": answer,
-        "provider": provider,
-        "model": llm.PROVIDERS[provider].model if provider else None,
-        "removed_citations": removed_citations,
-        "reranked": any("rerank_score" in item for item in sources),
-        "sources": [
-            {
-                "label": f"S{i}",
-                "source_name": item["source_name"],
-                "page": item["page"],
-                "page_end": item.get("page_end", item["page"]),
-                "score": round(item["score"], 4),
-                "rerank_score": round(item["rerank_score"], 4) if "rerank_score" in item else None,
-                "text": item["text"],
-            }
-            for i, item in enumerate(sources, start=1)
-        ],
-    }
+    return {**search_summary(request, provider, sources), "answer": answer, "removed_citations": removed_citations}
+
+
+@app.post("/ask/stream")
+def ask_stream(request: AskRequest):
+    """Like /ask, but streams newline-delimited JSON events as the answer is written.
+
+    Events: {"type": "sources", ...} first (same fields as /ask minus the answer),
+    then {"type": "token", "text": ...} pieces, then {"type": "done", "answer",
+    "removed_citations"} with citations cleaned, or {"type": "error", "detail"}.
+    """
+    check_index_ready()
+    provider = choose_provider(request)
+    if provider:
+        reason = llm.PROVIDERS[provider].unavailable_reason()
+        if reason:
+            raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
+    sources = retrieve(request.question, request.top_k, rerank=request.rerank)
+
+    def event(kind: str, **fields: Any) -> str:
+        return json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
+
+    def events():
+        yield event("sources", **search_summary(request, provider, sources))
+        if not provider:
+            yield event("done", answer=None, removed_citations=[])
+            return
+        pieces: list[str] = []
+        try:
+            if not sources:
+                pieces.append(NO_SOURCES_ANSWER)
+                yield event("token", text=NO_SOURCES_ANSWER)
+            else:
+                for piece in llm.stream(provider, SYSTEM_PROMPT, build_prompt(request.question, sources)):
+                    pieces.append(piece)
+                    yield event("token", text=piece)
+        except llm.ProviderError as exc:
+            yield event("error", detail=str(exc))
+            return
+        except Exception as exc:
+            logger.exception("Answer generation with %s failed", provider)
+            yield event("error", detail=f"{provider} failed: {exc}")
+            return
+        answer, removed = clean_citations("".join(pieces), len(sources))
+        yield event("done", answer=answer, removed_citations=removed)
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
 # Load previously persisted index on module import as well, useful in some reload setups.

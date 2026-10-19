@@ -2,7 +2,8 @@
 
 Hosted APIs (Claude, ChatGPT, Gemini) and open-weight models run locally on a
 GPU with Hugging Face Transformers. Each provider turns a system prompt and a
-user prompt into answer text; `backend.main` builds the prompts.
+user prompt into answer text; `backend.main` builds the prompts. Local models
+can also stream the answer piece by piece as it is generated.
 
 SDKs are imported lazily so a missing package or API key only disables that
 provider instead of breaking the app.
@@ -14,7 +15,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger("afrisearch.llm")
 
@@ -35,6 +36,9 @@ class Provider:
     model: str
     check: Callable[[], str | None]  # returns why the provider is unavailable, or None
     generate: Callable[[str, str], str]  # (system, prompt) -> answer text
+    # (system, prompt) -> pieces of answer text as they are generated; None if the
+    # provider can only return the whole answer at once.
+    stream: Callable[[str, str], Iterator[str]] | None = None
 
     def unavailable_reason(self) -> str | None:
         try:
@@ -293,31 +297,35 @@ def _load_local(key: str):
     return processor, model
 
 
+def _chat_inputs(spec: LocalModelSpec, processor: Any, model: Any, system: str, prompt: str) -> Any:
+    def content(text: str) -> Any:
+        # Multimodal processors expect a list of typed parts.
+        return [{"type": "text", "text": text}] if spec.multimodal else text
+
+    messages = [
+        {"role": "system", "content": content(system)},
+        {"role": "user", "content": content(prompt)},
+    ]
+    return processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+        **spec.template_kwargs,
+    ).to(model.device)
+
+
 def _local_generator(key: str) -> Callable[[str, str], str]:
     spec = LOCAL_SPECS[key]
 
     def generate(system: str, prompt: str) -> str:
         import torch
 
-        def content(text: str) -> Any:
-            # Multimodal processors expect a list of typed parts.
-            return [{"type": "text", "text": text}] if spec.multimodal else text
-
-        messages = [
-            {"role": "system", "content": content(system)},
-            {"role": "user", "content": content(prompt)},
-        ]
         # The lock covers loading and generation: one model, one request at a time.
         with _local_lock:
             processor, model = _load_local(key)
-            inputs = processor.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                **spec.template_kwargs,
-            ).to(model.device)
+            inputs = _chat_inputs(spec, processor, model, system, prompt)
             with torch.no_grad():
                 output = model.generate(
                     **inputs,
@@ -337,6 +345,65 @@ def _local_generator(key: str) -> Callable[[str, str], str]:
     return generate
 
 
+def _local_streamer(key: str) -> Callable[[str, str], Iterator[str]] | None:
+    spec = LOCAL_SPECS[key]
+    if spec.parse:
+        return None  # the raw output needs cleaning (gpt-oss channels), so it can't be shown as it comes
+
+    def stream(system: str, prompt: str) -> Iterator[str]:
+        import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+        stop = threading.Event()
+
+        class StopWhenAsked(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                return torch.full((input_ids.shape[0],), stop.is_set(), dtype=torch.bool, device=input_ids.device)
+
+        with _local_lock:
+            processor, model = _load_local(key)
+            inputs = _chat_inputs(spec, processor, model, system, prompt)
+            streamer = TextIteratorStreamer(
+                getattr(processor, "tokenizer", processor), skip_prompt=True, skip_special_tokens=True,
+            )
+            errors: list[Exception] = []
+
+            def run() -> None:
+                try:
+                    with torch.no_grad():
+                        model.generate(
+                            **inputs,
+                            max_new_tokens=spec.max_new_tokens,
+                            do_sample=False,
+                            repetition_penalty=1.05,
+                            streamer=streamer,
+                            stopping_criteria=StoppingCriteriaList([StopWhenAsked()]),
+                        )
+                except Exception as exc:
+                    errors.append(exc)
+                    streamer.end()  # unblocks the loop below
+
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            produced = False
+            try:
+                for piece in streamer:
+                    if piece:
+                        produced = produced or bool(piece.strip())
+                        yield piece
+            finally:
+                # Also runs if the client goes away: stop generating before the
+                # lock is released, so the next request gets the model to itself.
+                stop.set()
+                thread.join()
+        if errors:
+            raise errors[0]
+        if not produced:
+            raise ProviderError(f"{spec.model_id} returned no text.")
+
+    return stream
+
+
 PROVIDERS: dict[str, Provider] = {
     provider.id: provider
     for provider in [
@@ -344,14 +411,14 @@ PROVIDERS: dict[str, Provider] = {
         Provider("chatgpt", "ChatGPT (OpenAI)", "api", OPENAI_MODEL, _openai_check, _openai_generate),
         Provider("gemini", "Gemini (Google)", "api", GEMINI_MODEL, _gemini_check, _gemini_generate),
         Provider("qwen", "Qwen 3.8 (local GPU)", "local", LOCAL_SPECS["qwen"].model_id,
-                 _local_checker("qwen"), _local_generator("qwen")),
+                 _local_checker("qwen"), _local_generator("qwen"), _local_streamer("qwen")),
         Provider("gemma", "Gemma 4 (local GPU)", "local", LOCAL_SPECS["gemma"].model_id,
-                 _local_checker("gemma"), _local_generator("gemma")),
+                 _local_checker("gemma"), _local_generator("gemma"), _local_streamer("gemma")),
         Provider("gpt-oss", "gpt-oss (local GPU)", "local", LOCAL_SPECS["gpt-oss"].model_id,
-                 _local_checker("gpt-oss"), _local_generator("gpt-oss")),
+                 _local_checker("gpt-oss"), _local_generator("gpt-oss"), _local_streamer("gpt-oss")),
         Provider("qwen-small", "Qwen 2.5 0.5B (local, runs on CPU)", "local",
                  LOCAL_SPECS["qwen-small"].model_id,
-                 _local_checker("qwen-small"), _local_generator("qwen-small")),
+                 _local_checker("qwen-small"), _local_generator("qwen-small"), _local_streamer("qwen-small")),
     ]
 }
 
@@ -365,11 +432,24 @@ def default_provider() -> str | None:
     return next((p.id for p in PROVIDERS.values() if p.unavailable_reason() is None), None)
 
 
-def generate(provider_id: str, system: str, prompt: str) -> str:
+def _usable(provider_id: str) -> Provider:
     provider = PROVIDERS.get(provider_id)
     if provider is None:
         raise KeyError(provider_id)
     reason = provider.unavailable_reason()
     if reason:
         raise ProviderError(f"{provider.label} is not available: {reason}")
-    return provider.generate(system, prompt)
+    return provider
+
+
+def generate(provider_id: str, system: str, prompt: str) -> str:
+    return _usable(provider_id).generate(system, prompt)
+
+
+def stream(provider_id: str, system: str, prompt: str) -> Iterator[str]:
+    """Yield the answer in pieces; providers that can't stream yield it whole."""
+    provider = _usable(provider_id)
+    if provider.stream is None:
+        yield provider.generate(system, prompt)
+    else:
+        yield from provider.stream(system, prompt)

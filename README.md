@@ -1,24 +1,27 @@
 # AfriSearch AI — Web App Starter
 
-A local app for asking questions about your own documents. Upload PDF or TXT files, and AfriSearch finds the most relevant passages and writes an answer that cites them. It turns the Notebook 5 pipeline into a web app.
+A local app for asking questions about your own documents. Upload PDFs, text files or photos of documents, and AfriSearch finds the most relevant passages and writes an answer that cites them. It turns the Notebook 5 pipeline into a web app.
 
 **Features**
-- Upload PDF and TXT documents; exact duplicates are rejected
+- Upload PDF and TXT documents, and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP); exact duplicates are rejected
+- OCR for scanned PDFs and photos with Tesseract, in English, Amharic and Swahili by default; PDFs that mix typed and scanned pages work too
 - Extract text with page numbers, split it into sentence-aware chunks that can span pages, and embed them
 - Index only new files (a full rebuild is optional), and delete documents from the UI
 - Multilingual semantic search (94 languages, including Amharic, Swahili, Somali, Hausa and Afaan Oromo), so a question in one language can find a document in another
 - A reranker that rereads the best matches and puts the most relevant passage first (can be switched off per question)
 - A relevance cutoff, so clearly unrelated passages are never passed to the model
-- Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question
+- Answers from **Claude, ChatGPT, Gemini** or a **local open-weight model**, picked per question; local models show the answer as it is written
 - Citations like `[S1]` link to the source passages; citations that don't match a source are removed
-- Files that can't be indexed (for example scanned PDFs) are reported in the UI
+- Files that can't be indexed (for example a scan when OCR isn't installed) are reported in the UI, with the reason
+- Light and dark mode, and a layout that works on phones
 - The index stays on disk between restarts
 
 ## Architecture
 
 ```
-frontend/app.py   Streamlit UI: upload, index status, model picker, answers, sources
-backend/main.py   FastAPI: ingestion, chunking, embeddings, retrieval, /ask
+frontend/app.py   Streamlit UI: upload, index status, model picker, streamed answers, sources
+.streamlit/       UI theme (light and dark) and upload size limit
+backend/main.py   FastAPI: ingestion, OCR, chunking, embeddings, retrieval, reranking, /ask
 backend/llm.py    Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
 tests/            pytest suite (no downloads, keys or GPU needed)
 evaluation/       question set with known answers + scoring script
@@ -37,6 +40,7 @@ data/             uploads/, index.json, embeddings.npy, manifest.json (created a
 - For **Claude / ChatGPT / Gemini**: an API key from the provider
 - For **Qwen 3.8, Gemma 4 and gpt-oss**: an NVIDIA GPU (see [GPU memory](#local-models))
 - **Qwen 2.5 0.5B** runs on an ordinary laptop CPU, with no key or GPU
+- For **scanned PDFs and photos**: the Tesseract OCR program (see [setup step 3](#3-optional-install-tesseract-for-scanned-pdfs-and-photos))
 
 ## Setup
 
@@ -73,7 +77,20 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
-### 3. (Optional) Add API keys
+### 3. (Optional) Install Tesseract for scanned PDFs and photos
+
+Typed PDFs and text files work without it. To read scans and photos, install Tesseract and the languages you need:
+
+```bash
+# Debian, Ubuntu, Kali
+sudo apt install tesseract-ocr tesseract-ocr-amh tesseract-ocr-swa
+# macOS (Homebrew); tesseract-lang contains all languages
+brew install tesseract tesseract-lang
+```
+
+On Windows, use the installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki), tick the extra languages you need, and add the install folder to `PATH`. Restart the API afterwards. The sidebar shows whether OCR is on and which languages it uses.
+
+### 4. (Optional) Add API keys
 
 Set the keys for the hosted models you want to use in the terminal that will run the API:
 
@@ -85,7 +102,7 @@ export GEMINI_API_KEY=...      # Gemini
 
 Windows PowerShell: `$env:ANTHROPIC_API_KEY="..."`. Without keys you can still use the local models.
 
-### 4. Start the API
+### 5. Start the API
 
 ```bash
 uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
@@ -93,7 +110,7 @@ uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 
 API docs: http://127.0.0.1:8000/docs
 
-### 5. Start the UI in another terminal
+### 6. Start the UI in another terminal
 
 Activate the same virtual environment, then:
 ```bash
@@ -104,11 +121,11 @@ The UI opens at http://localhost:8501.
 
 ## Using the app
 
-1. **Add documents:** in the sidebar, choose `.pdf` or `.txt` files and click **Upload and index**. Only new files are processed. The sidebar shows the document and chunk counts, the indexed files (🗑 deletes one), and any file that couldn't be indexed.
-2. **Pick a model:** **Answer model** lists the models that are ready to use. A badge shows where the selected one runs (Cloud API, Local · GPU or Local · CPU). **Other models** explains why the rest are unavailable, for example a missing API key or no GPU.
-3. **Ask:** type a question and press **Ask AfriSearch** or **Ctrl+Enter**. **Passages to retrieve** sets how many passages the model sees. **Rerank passages** (on by default) puts the most relevant passages first; turn it off for slightly faster searches.
-4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each passage shows its file, pages and relevance (and its reranker score when reranking was used). Always check important claims against them.
-5. **Earlier answers:** your last 10 answers stay available in the session. Click **Show** to bring one back.
+1. **Add documents:** in the sidebar, choose PDF, TXT or image files and click **Upload and index**. Only new files are processed; scanned pages are read with OCR, which takes a few seconds per page. The sidebar lists your documents (🗑 deletes one, **OCR** marks documents read with OCR) and any file that couldn't be indexed, with the reason.
+2. **Pick a model:** the line above the question shows which model will answer and where it runs (Cloud API, Local · GPU or Local · CPU). Open **Settings** to change the model, the number of passages it sees, and reranking. **Other models** there explains why the rest are unavailable, for example a missing API key or no GPU.
+3. **Ask:** type a question in any language and press **Ask AfriSearch** or **Ctrl+Enter**. With a local model, the answer appears as it is written.
+4. **Check the answer:** citations such as **S1** are highlighted. Under **Sources**, each card shows the file, pages, relevance, reranker score and whether the text came from OCR, with the full passage one click away. Always check important claims against them.
+5. **Earlier questions:** your last 10 answers stay available in the session. Click **Show** to bring one back.
 
 **Advanced → Rebuild full index** processes every document again. You rarely need it: when the search model or chunk settings change, the sidebar shows which documents are out of date, and **Re-index now** (or **Upload and index**) updates just those.
 
@@ -127,6 +144,7 @@ The UI opens at http://localhost:8501.
 - **Which model is pre-selected:** `AFRISEARCH_DEFAULT_PROVIDER` (for example `qwen-small`). Otherwise the first available model in the table order is used.
 - **Claude refusals:** requests to Claude include Anthropic's server-side refusal fallback. If a safety filter declines a question, the API answers with Anthropic's recommended fallback model instead of returning an error.
 - **Privacy:** when you use Claude, ChatGPT or Gemini, the retrieved passages from your documents are sent to that company.
+- **Streaming:** local models (except gpt-oss, whose raw output needs cleaning first) show the answer as it is written; the first words of a Qwen 2.5 0.5B answer appear in about a second once the model is loaded. Claude, ChatGPT and Gemini answers appear all at once.
 - **Cost:** about $0.01 per question with `claude-opus-5-5` and about half that with `gpt-6.1-sol` (at October 2026 prices). Local models are free.
 
 ### Local models
@@ -198,6 +216,7 @@ If your documents are full of codes the search model confuses, measure it on you
 | `AFRISEARCH_MIN_SCORE` | `0.75` for E5 models, `0.2` otherwise | Passages less similar than this are ignored |
 | `AFRISEARCH_QUERY_PREFIX` / `AFRISEARCH_PASSAGE_PREFIX` | `query: ` / `passage: ` for E5 models | Text added before questions / passages when embedding |
 | `AFRISEARCH_RERANKER` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Reranking model; `off` disables reranking |
+| `AFRISEARCH_OCR_LANGS` | `eng+amh+swa` | Tesseract languages for OCR, joined with `+` (e.g. `eng+amh+swa+som`); ones not installed are skipped |
 | `AFRISEARCH_LOCAL_QUANTIZE` | off | `4bit` loads Qwen 3.8 and Gemma 4 in 4-bit |
 | `AFRISEARCH_LOCAL_MAX_NEW_TOKENS` | `512` | Answer length cap for local GPU models |
 | `AFRISEARCH_ALLOW_CPU` | off | `1` lets GPU models run on CPU |
@@ -209,17 +228,18 @@ The model-name variables are listed in [Answer models](#answer-models).
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/documents/upload` | Upload files (multipart field `files`) |
+| `POST` | `/documents/upload` | Upload PDF, TXT or image files (multipart field `files`) |
 | `POST` | `/documents/index` | Index new uploads; `?full=true` rebuilds everything. Returns failed files |
-| `GET` | `/documents` | Indexed documents, chunk count, documents needing re-indexing, search model and reranker |
+| `GET` | `/documents` | Indexed documents (and whether each was read with OCR), chunk count, documents needing re-indexing, search model, reranker and OCR status |
 | `DELETE` | `/documents/{source_id}` | Delete a document and its chunks |
 | `GET` | `/providers` | Answer models, whether each is available, and why not |
 | `POST` | `/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer"}` → answer, sources (with `score` and `rerank_score`), whether they were reranked, removed citations |
-| `GET` | `/health` | Status, chunk count, search model and reranker |
+| `POST` | `/ask/stream` | Same request as `/ask`; streams newline-delimited JSON events: `sources`, then `token` pieces of the answer, then `done` (cleaned answer) or `error` |
+| `GET` | `/health` | Status, chunk count, search model, reranker and OCR status |
 
 ## Testing
 
-The tests use a fake search model, a fake reranker, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
+The tests use a fake search model, a fake reranker, fake OCR, a fake answer model and a temporary data folder. They need no downloads, API keys or GPU, and never touch your `data/` folder.
 
 ```bash
 pip install -r requirements-dev.txt   # adds pytest and httpx
@@ -233,6 +253,8 @@ pytest -q
 | `tests/test_ask.py` | `/ask`: cited answers, relevance cutoff, provider selection and errors |
 | `tests/test_search_model.py` | Per-model prefixes and cutoffs, environment overrides, re-indexing after a model change |
 | `tests/test_reranker.py` | Reranking order, candidate count, cutoff before reranking, turning reranking off |
+| `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract, blank scans |
+| `tests/test_stream.py` | `/ask/stream` events, cleaned citations, errors during generation, search-only requests |
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests (real SDKs against a local mock server), availability checks, gpt-oss output parsing |
 | `tests/test_evaluation_scoring.py` | The evaluation script's grading rules |
 
@@ -280,19 +302,20 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 
 ## Troubleshooting
 
-- **"Cannot reach the API":** start the backend (step 4) before the UI, and check `AFRISEARCH_API_URL`.
+- **"Cannot reach the API":** start the backend (step 5) before the UI, and check `AFRISEARCH_API_URL`.
 - **A model is missing from the picker:** open **Other models** for the reason. Usually a key isn't set in the terminal running the API, or there's no GPU.
 - **"No passages were similar enough":** rephrase the question, or lower `AFRISEARCH_MIN_SCORE`.
 - **"documents were indexed with a different search model" / HTTP 409 from `/ask`:** the search model or chunk settings changed. Click **Re-index now** in the sidebar.
-- **A PDF is "Not indexed: no extractable text":** it is probably scanned. OCR isn't supported yet.
+- **"needs OCR, which is not available":** the file is a scan or photo and Tesseract isn't installed, or the API can't find it. Install it ([setup step 3](#3-optional-install-tesseract-for-scanned-pdfs-and-photos)) and restart the API. Then click **Upload and index** (no new files needed): files that failed before are retried.
+- **OCR text is poor:** OCR needs clear, straight, well-lit pages of at least about 300 dpi. Handwriting isn't supported. Check that the document's language is installed (`tesseract --list-langs`) and listed in `AFRISEARCH_OCR_LANGS`.
 - **Out of GPU memory:** set `AFRISEARCH_LOCAL_QUANTIZE=4bit`, or use gpt-oss-20b.
-- **Only "Qwen 2.5 0.5B" is offered:** that's expected on a machine with no API keys and no NVIDIA GPU. Add keys (setup step 3) to enable Claude, ChatGPT or Gemini; for those, also install `anthropic`, `openai` and `google-genai` into the environment.
+- **Only "Qwen 2.5 0.5B" is offered:** that's expected on a machine with no API keys and no NVIDIA GPU. Add keys (setup step 4) to enable Claude, ChatGPT or Gemini; for those, also install `anthropic`, `openai` and `google-genai` into the environment.
 - **The first local answer is slow:** the model loads on the first question. Later questions are much faster.
 - **The first search is slow:** the search model and reranker load on first use (about 10 s on a laptop CPU, plus the download the very first time). Set `AFRISEARCH_RERANKER=off` if you don't want the reranker.
 
 ## Notes and limitations
 
-- Only PDF and TXT are supported. Scanned PDFs need OCR, which isn't supported yet.
+- PDF, TXT and common image formats are supported; Word, Excel and other formats aren't. OCR doesn't read handwriting, and Tesseract has no language data for Afaan Oromo or Hausa (their Latin script is usually read acceptably with English).
 - Documents are stored locally in `data/uploads/`. Don't upload private or sensitive documents unless you control the machine and understand the risks.
 - Generated answers and citations can be wrong, especially from the small local model. Always check the source passages.
 - The app is for local development, not public deployment. Before exposing it to the internet, add authentication, upload quotas, file-content validation, rate limits, secure configuration and stronger storage controls.
