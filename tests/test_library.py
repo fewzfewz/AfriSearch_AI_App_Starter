@@ -94,3 +94,25 @@ def test_version_is_reported(client):
     from backend import __version__
 
     assert client.get("/").json()["version"] == __version__
+
+
+def test_replacing_a_document_with_a_new_version(client, fake_model):
+    docs = index(client, ("guide.txt", SOLAR_GUIDE))
+    old_id = docs["guide.txt"]["source_id"]
+    chat = client.post("/ask", json={"question": "How often should solar panels be cleaned?", "save": True}).json()
+
+    new_version = b"Solar Panel Maintenance Guide, 2027 edition. Clean the panels every two weeks."
+    response = client.post(f"/documents/{old_id}/replace", files={"file": ("guide.txt", new_version, "text/plain")})
+    assert response.status_code == 200
+    client.post("/documents/index")
+    docs = client.get("/documents").json()["documents"]
+    assert [d["source_name"] for d in docs] == ["guide.txt"] and docs[0]["source_id"] != old_id
+    passages = client.get(f"/documents/{docs[0]['source_id']}/passages").json()["passages"]
+    assert "2027 edition" in passages[0]["text"]
+    old_answer = client.get(f"/chats/{chat['chat_id']}").json()["messages"][1]
+    assert "every month" in old_answer["data"]["sources"][0]["text"]  # earlier answers keep their quotes
+
+    assert client.post("/documents/missing.txt/replace", files={"file": ("x.txt", b"text", "text/plain")}).status_code == 404
+    rejected = client.post(f"/documents/{docs[0]['source_id']}/replace", files={"file": ("bad.pdf", b"not a pdf", "application/pdf")})
+    assert rejected.status_code == 400 and "PDF" in rejected.json()["detail"]
+    assert len(client.get("/documents").json()["documents"]) == 1  # a rejected version leaves the old one

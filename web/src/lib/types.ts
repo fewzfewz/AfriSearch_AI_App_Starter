@@ -140,6 +140,8 @@ export interface ChatSummary {
   created_at: string;
   updated_at: string;
   questions: number;
+  shared?: number;
+  owner_name?: string; // for chats others shared with the workspace
 }
 
 export interface MessageData {
@@ -162,8 +164,10 @@ export interface Message {
   created_at: string;
 }
 
-export interface ChatDetail extends ChatSummary {
+export interface ChatDetail extends Omit<ChatSummary, "shared"> {
   messages: Message[];
+  shared: boolean;
+  mine: boolean;
 }
 
 export type StreamEvent =
@@ -172,7 +176,7 @@ export type StreamEvent =
     >)
   | { type: "token"; text: string }
   | { type: "done"; answer: string | null; removed_citations: string[]; message_id: string | null }
-  | { type: "error"; detail: string };
+  | { type: "error"; detail: string; discard_partial?: boolean };
 
 export interface FeedbackRecord {
   rating: "up" | "down";

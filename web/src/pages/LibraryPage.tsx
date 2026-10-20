@@ -1,14 +1,16 @@
 // The workspace's documents: upload, indexing progress, and the document list.
-import { AlertCircle, CheckCircle2, ExternalLink, FileUp, Loader2, MoreHorizontal, RefreshCw, ScanText, Search, Trash2, Upload } from "lucide-react";
+import { AlertCircle, Camera, CheckCircle2, ExternalLink, FilePlus2, FileUp, Loader2, MoreHorizontal, RefreshCw, ScanText, Search, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileIcon } from "../components/answer";
 import { Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Popover, Spinner, cx, useToast } from "../components/ui";
-import { api, openDocument, uploadFiles } from "../lib/api";
+import { api, authHeaders, openDocument, uploadFiles } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatPages, formatSize, timeAgo } from "../lib/format";
 import { useApi, useInterval } from "../lib/hooks";
 import type { DocumentInfo, DocumentsResponse, FailedFile, Job, Passage } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
+
+const PAGE_SIZE = 50;
 
 function ProgressBar({ value }: { value: number | null }) {
   return (
@@ -71,7 +73,14 @@ function DropZone({ onFiles, accept, maxMb, disabled }: { onFiles: (files: File[
         <FileUp className="h-6 w-6" />
       </div>
       <p className="mt-4 font-semibold">Drop files here, or <span className="text-brand-700 dark:text-brand-400">browse</span></p>
-      <p className="mt-1 text-sm text-ink-500">PDF, TXT, or photos and scans of pages · up to {maxMb} MB each</p>
+      <p className="mt-1 text-sm text-ink-500">PDF, Word, Excel, PowerPoint, text, or photos and scans of pages · up to {maxMb} MB each</p>
+      {/* On phones, open the camera straight away: photos of pages are read with OCR. */}
+      <label onClick={(e) => e.stopPropagation()}
+        className="mt-4 inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg bg-white px-3 text-sm font-medium text-ink-700 shadow-sm ring-1 ring-ink-200 hover:bg-ink-50 dark:bg-ink-900 dark:text-ink-200 dark:ring-ink-700 sm:hidden">
+        <Camera className="h-4 w-4" /> Take a photo
+        <input type="file" accept="image/*" capture="environment" hidden disabled={disabled}
+          onChange={(e) => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+      </label>
       <input
         ref={input}
         type="file"
@@ -147,6 +156,30 @@ export function LibraryPage() {
   const [query, setQuery] = useState("");
   const [viewing, setViewing] = useState<DocumentInfo | null>(null);
   const [deleting, setDeleting] = useState<DocumentInfo | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [deletingSelected, setDeletingSelected] = useState(false);
+  const replaceInput = useRef<HTMLInputElement>(null);
+  const [replacing, setReplacing] = useState<DocumentInfo | null>(null);
+
+  const replaceWith = async (file: File | undefined) => {
+    const doc = replacing;
+    setReplacing(null);
+    if (!file || !doc) return;
+    try {
+      const body = new FormData();
+      body.append("file", file, file.name);
+      const response = await fetch(`/api/documents/${encodeURIComponent(doc.source_id)}/replace`, {
+        method: "POST", body, headers: await authHeaders(),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail ?? "Upload failed");
+      toast(`Uploaded the new version of ${doc.source_name}`);
+      await startIndexing();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
   const reloadDocuments = documents.reload;
 
   // Pick up a job that is still running (e.g. after a page reload).
@@ -330,11 +363,23 @@ export function LibraryPage() {
                   className="w-full rounded-lg border border-ink-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-800 dark:bg-ink-900" />
               </div>
               <span className="text-sm text-ink-500">{shown.length} of {data.documents.length}</span>
+              {selected.length > 0 && (
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-sm text-ink-500">{selected.length} selected</span>
+                  <Button size="sm" variant="danger" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setDeletingSelected(true)}>Delete selected</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setSelected([])}>Clear</Button>
+                </div>
+              )}
             </div>
             <Card className="overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="hidden border-b border-ink-100 bg-ink-50 text-left text-xs font-medium uppercase tracking-wide text-ink-500 dark:border-ink-800 dark:bg-ink-900/60 sm:table-header-group">
                   <tr>
+                    <th className="w-10 pl-4">
+                      <input type="checkbox" aria-label="Select all shown documents" className="h-4 w-4 rounded accent-brand-700"
+                        checked={shown.length > 0 && shown.every((d) => selected.includes(d.source_id))}
+                        onChange={(e) => setSelected(e.target.checked ? shown.map((d) => d.source_id) : [])} />
+                    </th>
                     <th className="px-4 py-2.5">Document</th>
                     <th className="px-4 py-2.5">Pages</th>
                     <th className="px-4 py-2.5">Passages</th>
@@ -344,8 +389,13 @@ export function LibraryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
-                  {shown.map((doc) => (
-                    <tr key={doc.source_id} className="transition hover:bg-ink-50 dark:hover:bg-ink-800/40">
+                  {shown.slice(0, limit).map((doc) => (
+                    <tr key={doc.source_id} className={cx("transition hover:bg-ink-50 dark:hover:bg-ink-800/40", selected.includes(doc.source_id) && "bg-brand-50/60 dark:bg-brand-950/30")}>
+                      <td className="hidden w-10 pl-4 sm:table-cell">
+                        <input type="checkbox" aria-label={`Select ${doc.source_name}`} className="h-4 w-4 rounded accent-brand-700"
+                          checked={selected.includes(doc.source_id)}
+                          onChange={(e) => setSelected((all) => e.target.checked ? [...all, doc.source_id] : all.filter((id) => id !== doc.source_id))} />
+                      </td>
                       <td className="px-4 py-3">
                         <button type="button" onClick={() => setViewing(doc)} className="flex min-w-0 items-center gap-2.5 text-left">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 dark:bg-ink-800"><FileIcon name={doc.source_name} /></span>
@@ -371,6 +421,7 @@ export function LibraryPage() {
                             <>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
                               <MenuItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); openDocument(doc.source_id).catch((e: Error) => toast(e.message, "error")); }}>Open original</MenuItem>
+                              <MenuItem icon={<FilePlus2 className="h-4 w-4" />} onClick={() => { close(); setReplacing(doc); replaceInput.current?.click(); }}>Upload new version</MenuItem>
                               <MenuItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setDeleting(doc); }}>Delete</MenuItem>
                             </>
                           )}
@@ -381,6 +432,13 @@ export function LibraryPage() {
                 </tbody>
               </table>
             </Card>
+            {shown.length > limit && (
+              <div className="mt-3 text-center">
+                <Button size="sm" onClick={() => setLimit((n) => n + PAGE_SIZE)}>
+                  Show more ({shown.length - limit} left)
+                </Button>
+              </div>
+            )}
             {data.ocr.available && (
               <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-500">
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Scans and photos are read with OCR ({data.ocr.languages.join(", ")}).
@@ -391,6 +449,24 @@ export function LibraryPage() {
       </div>
 
       <PassagesDrawer doc={viewing} onClose={() => setViewing(null)} />
+      <input ref={replaceInput} type="file" hidden accept={(config?.file_types ?? []).map((ext) => `.${ext}`).join(",")}
+        onChange={(e) => { replaceWith(e.target.files?.[0]); e.target.value = ""; }} />
+      <ConfirmDialog
+        open={deletingSelected}
+        title={`Delete ${selected.length} document${selected.length === 1 ? "" : "s"}?`}
+        confirmLabel="Delete documents"
+        onClose={() => setDeletingSelected(false)}
+        onConfirm={async () => {
+          const results = await Promise.allSettled(selected.map((id) =>
+            api(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" })));
+          const failed = results.filter((r) => r.status === "rejected").length;
+          toast(failed ? `${failed} couldn't be deleted` : `Deleted ${selected.length} documents`, failed ? "error" : "success");
+          setSelected([]);
+          documents.reload();
+        }}
+      >
+        They'll be removed for everyone in this workspace. Answers that cited them keep their quoted passages.
+      </ConfirmDialog>
       <ConfirmDialog
         open={Boolean(deleting)}
         title="Delete document?"

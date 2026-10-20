@@ -13,6 +13,37 @@ import {
 import { createPortal } from "react-dom";
 import { useClickOutside } from "../lib/hooks";
 
+/** Keep Tab inside an open dialog, focus it on open, and return focus to where it was on close. */
+function useFocusTrap(ref: React.RefObject<HTMLElement>, open: boolean) {
+  useEffect(() => {
+    if (!open || !ref.current) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(ref.current?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ) ?? []);
+    const autofocus = ref.current.querySelector<HTMLElement>("[autofocus]");
+    (autofocus ?? focusable()[0] ?? ref.current).focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const [first, last] = [items[0], items[items.length - 1]];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, [ref, open]);
+}
+
 export function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
@@ -153,6 +184,8 @@ export function Modal({ open, onClose, title, children, footer, wide }: {
   footer?: ReactNode;
   wide?: boolean;
 }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialog, open);
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -164,6 +197,8 @@ export function Modal({ open, onClose, title, children, footer, wide }: {
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center">
       <div className="absolute inset-0 bg-ink-950/50 backdrop-blur-sm" onClick={onClose} />
       <div
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -190,6 +225,8 @@ export function Drawer({ open, onClose, title, subtitle, children }: {
   subtitle?: ReactNode;
   children: ReactNode;
 }) {
+  const panel = useRef<HTMLElement>(null);
+  useFocusTrap(panel, open);
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -200,7 +237,7 @@ export function Drawer({ open, onClose, title, subtitle, children }: {
   return createPortal(
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-ink-950/40" onClick={onClose} />
-      <aside role="dialog" aria-label={title} className="absolute inset-y-0 right-0 flex w-full max-w-xl animate-fade-in flex-col bg-white shadow-2xl dark:bg-ink-900">
+      <aside ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className="absolute inset-y-0 right-0 flex w-full max-w-xl animate-fade-in flex-col bg-white shadow-2xl dark:bg-ink-900">
         <div className="flex items-start justify-between gap-4 border-b border-ink-100 px-5 py-4 dark:border-ink-800">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">{title}</h2>

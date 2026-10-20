@@ -108,7 +108,7 @@ def test_blank_scans_are_reported(client, app_env, monkeypatch):
 
 
 def test_unsupported_files_are_rejected(client):
-    errors = upload(client, ("notes.docx", b"PK\x03\x04"))["errors"]
+    errors = upload(client, ("slides.key", b"PK\x03\x04"))["errors"]
     assert "images" in errors[0]["error"]
 
 

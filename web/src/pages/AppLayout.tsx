@@ -1,7 +1,7 @@
 // The signed-in app: sidebar (workspaces, navigation, recent chats) and the page.
 import {
   BarChart3, Check, ChevronsUpDown, FolderOpen, LogOut, Menu, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil,
-  Plus, Settings, Sun, Trash2, X,
+  Plus, Settings, Sun, Trash2, Users, X,
 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -15,9 +15,10 @@ import { useWorkspace } from "../lib/workspace";
 
 interface ChatsState {
   chats: ChatSummary[];
+  shared: ChatSummary[]; // chats other members shared with this workspace
   reload: () => void;
 }
-const ChatsContext = createContext<ChatsState>({ chats: [], reload: () => {} });
+const ChatsContext = createContext<ChatsState>({ chats: [], shared: [], reload: () => {} });
 export const useChats = () => useContext(ChatsContext);
 
 function NameDialog({ open, title, initial, confirm, onSave, onClose }: {
@@ -157,7 +158,10 @@ function ChatList({ onNavigate }: { onNavigate: () => void }) {
               )}
               title={chat.title}
             >
-              <span className="block truncate">{chat.title}</span>
+              <span className="flex items-center gap-1 truncate">
+                {chat.shared ? <Users className="h-3 w-3 shrink-0 text-ink-400" aria-label="Shared" /> : null}
+                <span className="truncate">{chat.title}</span>
+              </span>
               <span className="block text-[11px] text-ink-400">{timeAgo(chat.updated_at)}</span>
             </Link>
             <div className="absolute right-1 top-1.5 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
@@ -169,6 +173,12 @@ function ChatList({ onNavigate }: { onNavigate: () => void }) {
                 {(close) => (
                   <>
                     <MenuItem icon={<Pencil className="h-4 w-4" />} onClick={() => { close(); setRenaming(chat); }}>Rename</MenuItem>
+                    <MenuItem icon={<Users className="h-4 w-4" />} onClick={async () => {
+                      close();
+                      await api(`/chats/${chat.id}`, { method: "PATCH", json: { shared: !chat.shared } }).catch((e: Error) => toast(e.message, "error"));
+                      toast(chat.shared ? "Stopped sharing" : "Shared read-only with everyone in this workspace");
+                      reload();
+                    }}>{chat.shared ? "Stop sharing" : "Share with workspace"}</MenuItem>
                     <MenuItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setDeleting(chat); }}>Delete</MenuItem>
                   </>
                 )}
@@ -201,6 +211,29 @@ function ChatList({ onNavigate }: { onNavigate: () => void }) {
       >
         “{deleting?.title}” and its answers will be deleted. Your documents aren't affected.
       </ConfirmDialog>
+    </>
+  );
+}
+
+function SharedChats({ onNavigate }: { onNavigate: () => void }) {
+  const { shared } = useChats();
+  const chatId = useLocation().pathname.match(/^\/app\/chat\/([^/]+)/)?.[1];
+  if (!shared.length) return null;
+  return (
+    <>
+      <p className="px-3 pb-1.5 pt-4 text-xs font-medium uppercase tracking-wide text-ink-400">Shared with you</p>
+      <ul className="space-y-0.5">
+        {shared.map((chat) => (
+          <li key={chat.id}>
+            <Link to={`/app/chat/${chat.id}`} onClick={onNavigate} title={chat.title}
+              className={cx("block rounded-lg px-3 py-1.5 text-sm transition",
+                chat.id === chatId ? "bg-ink-200/70 font-medium dark:bg-ink-800" : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800/60")}>
+              <span className="block truncate">{chat.title}</span>
+              <span className="block text-[11px] text-ink-400">{chat.owner_name} · {timeAgo(chat.updated_at)}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }
@@ -268,6 +301,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <p className="px-3 pb-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Recent chats</p>
         <ChatList onNavigate={onNavigate} />
+        <SharedChats onNavigate={onNavigate} />
       </div>
       <div className="space-y-3 border-t border-ink-200 pt-3 dark:border-ink-800">
         <ThemeSwitch />
@@ -294,11 +328,12 @@ export function AppLayout() {
   const { current, error } = useWorkspace();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [shared, setShared] = useState<ChatSummary[]>([]);
   const location = useLocation();
 
   const reloadChats = useCallback(() => {
     if (!current) return;
-    api<{ chats: ChatSummary[] }>("/chats").then((r) => setChats(r.chats)).catch(() => {});
+    api<{ chats: ChatSummary[]; shared: ChatSummary[] }>("/chats").then((r) => { setChats(r.chats); setShared(r.shared ?? []); }).catch(() => {});
   }, [current]);
   useEffect(reloadChats, [reloadChats]);
   useEffect(() => setMobileOpen(false), [location.pathname]);
@@ -319,7 +354,7 @@ export function AppLayout() {
   }
 
   return (
-    <ChatsContext.Provider value={{ chats, reload: reloadChats }}>
+    <ChatsContext.Provider value={{ chats, shared, reload: reloadChats }}>
       <div className="flex h-[100dvh] overflow-hidden">
         <aside className="hidden w-72 shrink-0 border-r border-ink-200 dark:border-ink-800 lg:block">
           <Sidebar onNavigate={() => {}} />

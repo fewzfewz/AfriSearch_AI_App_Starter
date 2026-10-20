@@ -1,7 +1,8 @@
-"""Reading text from PDF, TXT and image files, with OCR for scans and photos."""
+"""Reading text from PDF, Office (Word, Excel, PowerPoint), text, HTML and image files, with OCR for scans."""
 from __future__ import annotations
 
 import os
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
@@ -64,6 +65,90 @@ def ocr_pdf_page(path: Path, page_number: int) -> str:
     return ocr_image(image)
 
 
+class _VisibleText(HTMLParser):
+    """Collects the text a reader would see in an HTML page (no scripts or styles)."""
+
+    BLOCKS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "td", "th"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript", "template"):
+            self.hidden += 1
+        elif tag in self.BLOCKS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript", "template") and self.hidden:
+            self.hidden -= 1
+        elif tag in self.BLOCKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def html_text(markup: str) -> str:
+    parser = _VisibleText()
+    parser.feed(markup)
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def _office(module: str, package: str):
+    try:
+        return __import__(module)
+    except ImportError as exc:
+        raise RuntimeError(f"Install the '{package}' package to read this file type.") from exc
+
+
+def extract_office(path: Path) -> list[tuple[int | None, str]]:
+    """(page, text) pairs from Word, Excel and PowerPoint files; slides count as pages."""
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        docx = _office("docx", "python-docx")
+        document = docx.Document(str(path))
+        blocks = [p.text for p in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                blocks.append(" | ".join(cell.text.strip() for cell in row.cells))
+        text = "\n".join(block.strip() for block in blocks if block.strip())
+        return [(None, text)] if text else []
+    if suffix == ".xlsx":
+        openpyxl = _office("openpyxl", "openpyxl")
+        workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+        sheets = []
+        try:
+            for sheet in workbook.worksheets:
+                rows = [" | ".join("" if v is None else str(v) for v in row).strip(" |")
+                        for row in sheet.iter_rows(values_only=True)]
+                rows = [row for row in rows if row]
+                if rows:
+                    # Each row ends like a sentence, so chunks break between rows.
+                    sheets.append(f"Sheet: {sheet.title}.\n" + "\n".join(f"{row}." for row in rows))
+        finally:
+            workbook.close()
+        text = "\n\n".join(sheets)
+        return [(None, text)] if text else []
+    if suffix == ".pptx":
+        pptx = _office("pptx", "python-pptx")
+        presentation = pptx.Presentation(str(path))
+        pages = []
+        for number, slide in enumerate(presentation.slides, start=1):
+            texts = [shape.text_frame.text for shape in slide.shapes if shape.has_text_frame and shape.text_frame.text.strip()]
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
+                texts.append(slide.notes_slide.notes_text_frame.text)
+            text = "\n".join(t.strip() for t in texts)
+            if text:
+                pages.append((number, text))
+        return pages
+    raise ValueError(f"Unsupported file type {suffix}.")
+
+
 def extract_file(
     path: Path, on_page: PageCallback | None = None,
 ) -> tuple[list[tuple[int | None, str]], set[int | None]]:
@@ -74,9 +159,13 @@ def extract_file(
     it and it isn't installed.
     """
     suffix = path.suffix.lower()
-    if suffix == ".txt":
+    if suffix in config.TEXT_EXTENSIONS:
         text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if suffix in (".html", ".htm"):
+            text = html_text(text)
         return ([(None, text)] if text else []), set()
+    if suffix in config.OFFICE_EXTENSIONS:
+        return extract_office(path), set()
     if suffix in config.IMAGE_EXTENSIONS:
         from PIL import Image
 
@@ -99,4 +188,4 @@ def extract_file(
             if on_page:
                 on_page(page_number, len(reader.pages), used_ocr)
         return pages, ocr_pages
-    raise ValueError("Only PDF, TXT and image files are supported.")
+    raise ValueError("Unsupported file type.")

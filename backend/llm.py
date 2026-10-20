@@ -97,10 +97,7 @@ def _claude_check() -> str | None:
     )
 
 
-def _claude_generate(system: str, prompt: str) -> str:
-    import anthropic
-
-    client = _client("claude", anthropic.Anthropic)
+def _claude_request(system: str, prompt: str) -> dict[str, Any]:
     request: dict[str, Any] = {
         "model": CLAUDE_MODEL,
         "max_tokens": API_MAX_TOKENS,
@@ -113,7 +110,14 @@ def _claude_generate(system: str, prompt: str) -> str:
         # recommended fallback model instead of returning the refusal.
         request["betas"] = ["server-side-fallback-2026-07-01"]
         request["fallbacks"] = "default"
-    response = client.beta.messages.create(**request)
+    return request
+
+
+def _claude_generate(system: str, prompt: str) -> str:
+    import anthropic
+
+    client = _client("claude", anthropic.Anthropic)
+    response = client.beta.messages.create(**_claude_request(system, prompt))
 
     if response.stop_reason == "refusal":
         raise ProviderError("Claude declined to answer this question.")
@@ -121,6 +125,24 @@ def _claude_generate(system: str, prompt: str) -> str:
     if not text:
         raise ProviderError(f"Claude returned no text (stop reason: {response.stop_reason}).")
     return text
+
+
+def _claude_stream(system: str, prompt: str) -> Iterator[str]:
+    import anthropic
+
+    client = _client("claude", anthropic.Anthropic)
+    produced = False
+    # With fallbacks, a declined attempt continues on the fallback model in the same stream.
+    with client.beta.messages.stream(**_claude_request(system, prompt)) as stream:
+        for text in stream.text_stream:
+            produced = produced or bool(text.strip())
+            yield text
+        final = stream.get_final_message()
+    if final.stop_reason == "refusal":
+        # Declined even after any fallback; text streamed so far is partial and must be discarded.
+        raise ProviderError("Claude declined to answer this question.")
+    if not produced:
+        raise ProviderError(f"Claude returned no text (stop reason: {final.stop_reason}).")
 
 
 # --- ChatGPT (OpenAI) ---------------------------------------------------------
@@ -148,6 +170,24 @@ def _openai_generate(system: str, prompt: str) -> str:
     return text
 
 
+def _openai_stream(system: str, prompt: str) -> Iterator[str]:
+    import openai
+
+    client = _client("openai", openai.OpenAI)
+    events = client.responses.create(
+        model=OPENAI_MODEL, instructions=system, input=prompt, max_output_tokens=API_MAX_TOKENS, stream=True,
+    )
+    produced = False
+    for event in events:
+        if event.type == "response.output_text.delta":
+            produced = produced or bool(event.delta.strip())
+            yield event.delta
+        elif event.type in ("response.failed", "response.incomplete", "error"):
+            raise ProviderError(f"ChatGPT stopped before finishing ({event.type.split('.')[-1]}).")
+    if not produced:
+        raise ProviderError("ChatGPT returned no text.")
+
+
 # --- Gemini (Google) ----------------------------------------------------------
 
 GEMINI_MODEL = os.getenv("AFRISEARCH_GEMINI_MODEL", "gemini-4-argon")
@@ -159,23 +199,34 @@ def _gemini_check() -> str | None:
     )
 
 
-def _gemini_generate(system: str, prompt: str) -> str:
-    from google import genai
+def _gemini_config(system: str) -> Any:
     from google.genai import types
 
+    return types.GenerateContentConfig(system_instruction=system, max_output_tokens=API_MAX_TOKENS)
+
+
+def _gemini_generate(system: str, prompt: str) -> str:
+    from google import genai
+
     client = _client("gemini", genai.Client)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=API_MAX_TOKENS,
-        ),
-    )
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system))
     text = (response.text or "").strip()
     if not text:
         raise ProviderError("Gemini returned no text (the response may have been blocked).")
     return text
+
+
+def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
+    from google import genai
+
+    client = _client("gemini", genai.Client)
+    produced = False
+    for chunk in client.models.generate_content_stream(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system)):
+        if chunk.text:
+            produced = produced or bool(chunk.text.strip())
+            yield chunk.text
+    if not produced:
+        raise ProviderError("Gemini returned no text (the response may have been blocked).")
 
 
 # --- Local open-weight models (Transformers, GPU) -----------------------------
@@ -410,9 +461,9 @@ def _local_streamer(key: str) -> Callable[[str, str], Iterator[str]] | None:
 PROVIDERS: dict[str, Provider] = {
     provider.id: provider
     for provider in [
-        Provider("claude", "Claude (Anthropic)", "api", CLAUDE_MODEL, _claude_check, _claude_generate),
-        Provider("chatgpt", "ChatGPT (OpenAI)", "api", OPENAI_MODEL, _openai_check, _openai_generate),
-        Provider("gemini", "Gemini (Google)", "api", GEMINI_MODEL, _gemini_check, _gemini_generate),
+        Provider("claude", "Claude (Anthropic)", "api", CLAUDE_MODEL, _claude_check, _claude_generate, _claude_stream),
+        Provider("chatgpt", "ChatGPT (OpenAI)", "api", OPENAI_MODEL, _openai_check, _openai_generate, _openai_stream),
+        Provider("gemini", "Gemini (Google)", "api", GEMINI_MODEL, _gemini_check, _gemini_generate, _gemini_stream),
         Provider("qwen", "Qwen 3.8 (local GPU)", "local", LOCAL_SPECS["qwen"].model_id,
                  _local_checker("qwen"), _local_generator("qwen"), _local_streamer("qwen")),
         Provider("gemma", "Gemma 4 (local GPU)", "local", LOCAL_SPECS["gemma"].model_id,

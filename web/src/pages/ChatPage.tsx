@@ -1,10 +1,10 @@
 // Asking questions: a chat with streamed, cited answers.
-import { AlertTriangle, Check, Copy, Download, FileSearch, FolderOpen, Sparkles, ThumbsDown, ThumbsUp, Upload } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, FileSearch, FolderOpen, RotateCcw, Sparkles, ThumbsDown, ThumbsUp, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnswerText, FileIcon, SourceCard, SourceChips } from "../components/answer";
 import { Composer, providerName, useAnswerSettings, whereItRuns } from "../components/composer";
-import { Alert, Badge, Button, IconButton, Modal, Spinner, cx, useToast } from "../components/ui";
+import { Alert, Badge, Button, IconButton, MenuItem, Modal, Popover, Spinner, cx, useToast } from "../components/ui";
 import { ApiError, api, streamAsk } from "../lib/api";
 import { formatPages } from "../lib/format";
 import { useApi } from "../lib/hooks";
@@ -35,10 +35,12 @@ function download(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-function AssistantMessage({ message, providers, onRate }: {
+function AssistantMessage({ message, providers, onRate, onRetry, busy }: {
   message: UiMessage;
   providers: Provider[];
   onRate: (message: UiMessage, rating: "up" | "down", comment: string) => Promise<void>;
+  onRetry: (question: string, providerId: string) => void;
+  busy: boolean;
 }) {
   const toast = useToast();
   const sources = message.data.sources ?? [];
@@ -96,6 +98,12 @@ function AssistantMessage({ message, providers, onRate }: {
         {message.content && !(notCovered && !message.streaming) && (
           <AnswerText text={message.content} onCite={cite} activeLabel={active} />
         )}
+        {!message.streaming && message.content && !notCovered && sources.length > 0 && !/\[S\d/.test(message.content) && (
+          <p className="flex flex-wrap items-center gap-x-2 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-3.5 w-3.5" /> This answer doesn't cite its sources, so check it against the passages.
+            {!showAll && <button type="button" onClick={() => setShowAll(true)} className="font-medium underline">Show passages</button>}
+          </p>
+        )}
         {message.data.error && <Alert tone="red" title="The answer couldn't be completed">{message.data.error}</Alert>}
         {passagesOnly && !sources.length && <p className="text-sm text-ink-500">No passages were similar enough to the question.</p>}
 
@@ -127,6 +135,23 @@ function AssistantMessage({ message, providers, onRate }: {
             <IconButton label="Download as Markdown" onClick={() => download("afrisearch-answer.md", exportMarkdown(message.question ?? "", message))}>
               <Download className="h-4 w-4" />
             </IconButton>
+            {message.question && providers.some((p) => p.available) && (
+              <Popover up width="w-64" trigger={({ toggle }) => (
+                <IconButton label="Try again with another model" onClick={toggle} disabled={busy}><RotateCcw className="h-4 w-4" /></IconButton>
+              )}>
+                {(close) => (
+                  <>
+                    <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Try again with</p>
+                    {providers.filter((p) => p.available).map((p) => (
+                      <MenuItem key={p.id} onClick={() => { close(); onRetry(message.question!, p.id); }}
+                        hint={p.id === message.data.provider ? <span className="text-xs text-ink-400">same</span> : undefined}>
+                        {providerName(p)}
+                      </MenuItem>
+                    ))}
+                  </>
+                )}
+              </Popover>
+            )}
             {message.content && !message.id.startsWith("tmp-") && (
               <>
                 <IconButton label="Helpful" onClick={() => rate("up")} className={cx(rating === "up" && "text-emerald-600 dark:text-emerald-400")}>
@@ -227,6 +252,7 @@ export function ChatPage() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loadingChat, setLoadingChat] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sharedBy, setSharedBy] = useState<string | null>(null); // set when viewing someone else's shared chat
   const abort = useRef<AbortController | null>(null);
   const createdHere = useRef<string | null>(null); // a chat this page just created (already on screen)
   const bottom = useRef<HTMLDivElement>(null);
@@ -234,6 +260,7 @@ export function ChatPage() {
   const documents = useApi<DocumentsResponse>("/documents");
 
   useEffect(() => {
+    setSharedBy(null);
     if (!chatId) {
       if (!createdHere.current) setMessages([]);
       createdHere.current = null;
@@ -244,6 +271,7 @@ export function ChatPage() {
     setLoadingChat(true);
     api<ChatDetail>(`/chats/${chatId}`)
       .then((chat) => {
+        setSharedBy(chat.mine ? null : chat.owner_name || "a colleague");
         let question = "";
         setMessages(chat.messages.map((m) => {
           if (m.role === "user") question = m.content;
@@ -264,10 +292,17 @@ export function ChatPage() {
   const update = (id: string, change: (m: UiMessage) => UiMessage) =>
     setMessages((all) => all.map((m) => (m.id === id ? change(m) : m)));
 
-  const ask = async (question: string) => {
+  const ask = async (question: string, providerOverride?: string) => {
+    // A shared chat is read-only: asking starts the user's own chat.
+    const ownChatId = sharedBy ? null : chatId ?? null;
+    if (sharedBy) {
+      setMessages([]);
+      setSharedBy(null);
+    }
     const available = providers.data?.providers.filter((p) => p.available) ?? [];
-    const provider = available.some((p) => p.id === settings.provider) ? settings.provider : providers.data?.default ?? null;
-    const answering = settings.mode === "answer";
+    const chosen = providerOverride ?? settings.provider;
+    const provider = available.some((p) => p.id === chosen) ? chosen : providers.data?.default ?? null;
+    const answering = providerOverride ? true : settings.mode === "answer";
     const now = new Date().toISOString();
     const tmp = `tmp-${Date.now()}`;
     setMessages((all) => [
@@ -287,13 +322,13 @@ export function ChatPage() {
         generate_answer: answering,
         provider: answering ? provider : null,
         source_ids: scope.length ? scope : null,
-        chat_id: chatId ?? null,
+        chat_id: ownChatId,
         save: true,
       };
       for await (const event of streamAsk(body, controller.signal)) {
         if (event.type === "sources") {
           update(id, (m) => ({ ...m, data: { ...m.data, sources: event.sources, provider: event.provider, model: event.model, reranked: event.reranked, covered: event.covered } }));
-          if (!chatId && event.chat_id) {
+          if (!ownChatId && event.chat_id) {
             createdHere.current = event.chat_id;
             navigate(`/app/chat/${event.chat_id}`, { replace: true });
             reloadChats();
@@ -305,7 +340,8 @@ export function ChatPage() {
           update(id, (m) => ({ ...m, id: final, content: event.answer ?? "", data: { ...m.data, removed_citations: event.removed_citations } }));
           id = final;
         } else if (event.type === "error") {
-          update(id, (m) => ({ ...m, data: { ...m.data, error: event.detail } }));
+          // A refusal mid-answer: the text so far isn't an answer, so don't leave it on screen.
+          update(id, (m) => ({ ...m, content: event.discard_partial ? "" : m.content, data: { ...m.data, error: event.detail } }));
         }
       }
     } catch (error) {
@@ -338,6 +374,11 @@ export function ChatPage() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 pb-8 pt-6 sm:px-6">
+          {sharedBy && (
+            <div className="mb-4">
+              <Alert tone="blue">Shared by {sharedBy} · read-only. Asking a question starts your own chat.</Alert>
+            </div>
+          )}
           {docs && docs.stale_documents > 0 && (
             <div className="mb-4">
               <Alert tone="amber" action={<Link to="/app/library" className="text-sm font-medium underline">Open Library</Link>}>
@@ -359,7 +400,8 @@ export function ChatPage() {
                     </div>
                   </div>
                 ) : (
-                  <AssistantMessage key={message.id} message={message} providers={providers.data?.providers ?? []} onRate={rate} />
+                  <AssistantMessage key={message.id} message={message} providers={providers.data?.providers ?? []} onRate={rate}
+                    onRetry={(question, providerId) => ask(question, providerId)} busy={busy} />
                 ),
               )}
               <div ref={bottom} />

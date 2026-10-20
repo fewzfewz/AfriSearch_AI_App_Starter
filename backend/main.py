@@ -43,9 +43,22 @@ if config.SENTRY_DSN:
 DEFAULT_WORKSPACE_NAME = "My documents"
 
 
+def preload_models() -> None:
+    """Load the search model and reranker now, so the first question doesn't wait for them."""
+    try:
+        models.get_embedder()
+        if models.RERANKER_ID:
+            models.get_reranker()
+        logger.info("Search models loaded")
+    except Exception:
+        logger.exception("Couldn't preload the search models; they'll load on first use")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.fail_interrupted_jobs()
+    if os.getenv("AFRISEARCH_PRELOAD_MODELS", "1") != "0":
+        threading.Thread(target=preload_models, name="preload", daemon=True).start()  # don't delay startup
     yield
 
 
@@ -99,6 +112,11 @@ class NameRequest(BaseModel):
 
 class TitleRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
+
+
+class ChatUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    shared: bool | None = None  # share read-only with everyone in the workspace
 
 
 class MemberRequest(BaseModel):
@@ -342,18 +360,35 @@ def delete_workspace(workspace_id: str, user: User = Depends(current_user)):
 def list_members(workspace_id: str, user: User = Depends(current_user)):
     if not db.get_workspace(workspace_id, user.id):
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    return {"members": db.list_members(workspace_id)}
+    return team(workspace_id)
+
+
+def team(workspace_id: str) -> dict[str, Any]:
+    return {"members": db.list_members(workspace_id), "invitations": db.list_invitations(workspace_id)}
 
 
 @api.post("/workspaces/{workspace_id}/members", status_code=201)
 def add_member(workspace_id: str, body: MemberRequest, user: User = Depends(current_user)):
+    """Add someone by email. People without an account yet are invited: they join on first sign-in."""
     owned_workspace(workspace_id, user)
-    invitee = db.find_user_by_email(body.email)
-    if not invitee:
-        raise HTTPException(status_code=404,
-                            detail="No account uses that email yet. Ask them to sign up first, then add them.")
-    db.add_member(workspace_id, invitee["id"])
-    return {"members": db.list_members(workspace_id)}
+    email = body.email.strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="Enter an email address.")
+    invitee = db.find_user_by_email(email)
+    if invitee:
+        db.add_member(workspace_id, invitee["id"])
+        message = f"{email} can now use this workspace."
+    else:
+        db.invite(workspace_id, email, user.id)
+        message = f"Invitation saved. {email} joins this workspace when they sign up or sign in with that email."
+    return {**team(workspace_id), "message": message}
+
+
+@api.delete("/workspaces/{workspace_id}/invitations/{email}")
+def cancel_invitation(workspace_id: str, email: str, user: User = Depends(current_user)):
+    owned_workspace(workspace_id, user)
+    db.cancel_invitation(workspace_id, email)
+    return team(workspace_id)
 
 
 @api.delete("/workspaces/{workspace_id}/members/{member_id}")
@@ -361,7 +396,7 @@ def remove_member(workspace_id: str, member_id: str, user: User = Depends(curren
     if member_id != user.id:  # members may leave; only owners remove others
         owned_workspace(workspace_id, user)
     db.remove_member(workspace_id, member_id)
-    return {"members": db.list_members(workspace_id)}
+    return team(workspace_id)
 
 
 # --- documents ----------------------------------------------------------------------------
@@ -457,6 +492,29 @@ def document_file(source_id: str, workspace: Workspace = Depends(current_workspa
         raise HTTPException(status_code=404, detail="Document not found.") from exc
     name = store.display_name(source_id, workspace.store.load_manifest())
     return FileResponse(path, filename=name, content_disposition_type="inline")
+
+
+@api.post("/documents/{source_id}/replace")
+async def replace_document(source_id: str, file: UploadFile = File(...), workspace: Workspace = Depends(current_workspace)):
+    """Upload a new version of a document; the old file and its passages are removed.
+
+    Answers that cited the old version keep their quoted passages. Index afterwards
+    (as for any upload) to make the new version searchable.
+    """
+    try:
+        workspace.store.file_path(source_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found.") from exc
+    limits.check(f"upload:{workspace.user.id}", limits.UPLOAD_LIMITS)
+    content = await read_limited(file)
+    if content is None:
+        raise HTTPException(status_code=400, detail="File exceeds 15 MB limit.")
+    saved, errors = workspace.store.save_uploads([(file.filename or "upload.txt", content)])
+    if not saved:
+        raise HTTPException(status_code=400, detail=errors[0]["error"])
+    workspace.store.remove(source_id)
+    return {"saved": saved[0], "replaced": source_id,
+            "message": "New version uploaded. Index the documents to make it searchable."}
 
 
 @api.delete("/documents/{source_id}")
@@ -628,13 +686,16 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                     pieces.append(piece)
                     yield event("token", text=piece)
         except Exception as exc:
-            if isinstance(exc, llm.ProviderError):
+            # A refusal or a model error means the text so far isn't a real answer: discard
+            # it. After a network or SDK failure, the partial text is kept with the error.
+            discard = isinstance(exc, llm.ProviderError)
+            if discard:
                 detail = str(exc)
             else:
                 logger.exception("Answer generation with %s failed", prepared.provider)
                 detail = f"{prepared.provider} failed: {exc}"
-            save_turn(prepared, summary, "".join(pieces), [], detail, time.monotonic() - started)
-            yield event("error", detail=detail)
+            save_turn(prepared, summary, "" if discard else "".join(pieces), [], detail, time.monotonic() - started)
+            yield event("error", detail=detail, discard_partial=discard)
             return
         answer, removed = clean_citations("".join(pieces), len(prepared.sources))
         message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started)
@@ -654,7 +715,9 @@ def owned_chat(chat_id: str, workspace: Workspace) -> dict[str, Any]:
 
 @api.get("/chats")
 def list_chats(workspace: Workspace = Depends(current_workspace)):
-    return {"chats": db.list_chats(workspace.id, workspace.user.id)}
+    """The user's chats, and chats others have shared with this workspace."""
+    return {"chats": db.list_chats(workspace.id, workspace.user.id),
+            "shared": db.list_shared_chats(workspace.id, workspace.user.id)}
 
 
 @api.post("/chats", status_code=201)
@@ -664,13 +727,22 @@ def create_chat(body: TitleRequest, workspace: Workspace = Depends(current_works
 
 @api.get("/chats/{chat_id}")
 def get_chat(chat_id: str, workspace: Workspace = Depends(current_workspace)):
-    return {**owned_chat(chat_id, workspace), "messages": db.list_messages(chat_id)}
+    """A chat with its messages: the user's own, or one shared with the workspace (read-only)."""
+    chat = db.get_visible_chat(chat_id, workspace.id, workspace.user.id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found.")
+    return {**chat, "shared": bool(chat["shared"]), "mine": chat["user_id"] == workspace.user.id,
+            "messages": db.list_messages(chat_id)}
 
 
 @api.patch("/chats/{chat_id}")
-def rename_chat(chat_id: str, body: TitleRequest, workspace: Workspace = Depends(current_workspace)):
+def update_chat(chat_id: str, body: ChatUpdate, workspace: Workspace = Depends(current_workspace)):
+    """Rename a chat, or share it with the workspace (only its owner can)."""
     owned_chat(chat_id, workspace)
-    db.rename_chat(chat_id, body.title.strip())
+    if body.title is not None:
+        db.rename_chat(chat_id, body.title.strip())
+    if body.shared is not None:
+        db.set_chat_shared(chat_id, body.shared)
     return owned_chat(chat_id, workspace)
 
 

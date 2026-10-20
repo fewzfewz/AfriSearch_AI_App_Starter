@@ -28,13 +28,20 @@ def file_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+UNSUPPORTED_MESSAGE = ("Supported: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), TXT, Markdown, CSV, HTML "
+                       "and images (PNG, JPG, TIFF, WebP, BMP). Save older .doc/.xls/.ppt files in the newer format.")
+
+
 def content_problem(filename: str, content: bytes) -> str | None:
     """Why the file's content doesn't match its type, or None if it looks right."""
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf" and b"%PDF-" not in content[:1024]:
         return "This doesn't look like a PDF file."
-    if suffix == ".txt" and b"\x00" in content[:65536]:
+    if suffix in config.TEXT_EXTENSIONS and b"\x00" in content[:65536]:
         return "This doesn't look like a text file."
+    if suffix in config.OFFICE_EXTENSIONS and not content.startswith(b"PK\x03\x04"):
+        # .docx/.xlsx/.pptx are zip files; the old .doc/.xls/.ppt formats are not.
+        return "This isn't a modern Office file. Save it as .docx, .xlsx or .pptx and upload again."
     if suffix in config.IMAGE_EXTENSIONS:
         from PIL import Image
 
@@ -157,8 +164,7 @@ class DocumentStore:
         for filename, content in files:
             original_name = Path(filename or "upload.txt").name
             if Path(original_name).suffix.lower() not in config.ALLOWED_EXTENSIONS:
-                errors.append({"filename": original_name,
-                               "error": "Only PDF, TXT and images (PNG, JPG, TIFF, WebP, BMP) are supported."})
+                errors.append({"filename": original_name, "error": UNSUPPORTED_MESSAGE})
                 continue
             if not content:
                 errors.append({"filename": original_name, "error": "File is empty."})

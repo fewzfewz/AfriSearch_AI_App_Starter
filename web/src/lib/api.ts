@@ -24,7 +24,7 @@ export class ApiError extends Error {
   }
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
+export async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   const token = await getToken();
   if (token) headers.Authorization = `Bearer ${token}`;

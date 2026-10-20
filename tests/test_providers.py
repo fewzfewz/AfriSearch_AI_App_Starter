@@ -35,7 +35,22 @@ class MockAPI:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 api.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
                 key = next((k for k in api.responses if k in self.path), None)
-                payload = json.dumps(api.responses[key] if key else {}).encode()
+                response = api.responses[key] if key else {}
+                if isinstance(response, dict) and "__sse__" in response:
+                    # A streaming response: server-sent events, as the real APIs send them.
+                    lines = []
+                    for name, data in response["__sse__"]:
+                        if name:
+                            lines.append(f"event: {name}")
+                        lines.append(f"data: {json.dumps(data)}\n")
+                    payload = ("\n".join(lines) + "\n").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                payload = json.dumps(response).encode()
                 self.send_response(200 if key else 404)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -106,6 +121,40 @@ def test_claude_refusal_raises_provider_error(claude):
         llm._claude_generate("system", "prompt")
 
 
+def claude_stream(*texts, stop_reason="end_turn"):
+    """The server-sent events of a streamed Claude answer."""
+    message = {**claude_message(), "content": [], "stop_reason": None}
+    events = [("message_start", {"type": "message_start", "message": message}),
+              ("content_block_start", {"type": "content_block_start", "index": 0,
+                                       "content_block": {"type": "text", "text": ""}})]
+    events += [("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                        "delta": {"type": "text_delta", "text": text}}) for text in texts]
+    events += [("content_block_stop", {"type": "content_block_stop", "index": 0}),
+               ("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                                  "usage": {"output_tokens": 5}}),
+               ("message_stop", {"type": "message_stop"})]
+    return {"__sse__": events}
+
+
+def test_claude_streams_with_the_same_request(claude, monkeypatch):
+    monkeypatch.setattr(llm, "CLAUDE_MODEL", "claude-opus-5-5")
+    claude.responses["/v1/messages"] = claude_stream("Clean them ", "every month ", "[S1].")
+    assert list(llm._claude_stream("Be accurate.", "Question?")) == ["Clean them ", "every month ", "[S1]."]
+    request = claude.last()
+    assert request["body"]["stream"] is True
+    assert request["body"]["fallbacks"] == "default"  # refusal fallback stays on when streaming
+    assert request["headers"]["anthropic-beta"] == "server-side-fallback-2026-07-01"
+
+
+def test_claude_refusal_mid_stream_raises_after_the_partial_text(claude):
+    claude.responses["/v1/messages"] = claude_stream("Partial ", stop_reason="refusal")
+    pieces = []
+    with pytest.raises(llm.ProviderError, match="declined"):
+        for piece in llm._claude_stream("system", "prompt"):
+            pieces.append(piece)
+    assert pieces == ["Partial "]  # the caller is told to discard these
+
+
 # --- ChatGPT -----------------------------------------------------------------------
 
 def test_chatgpt_request_and_answer(mock_api):
@@ -125,6 +174,35 @@ def test_chatgpt_request_and_answer(mock_api):
     assert body["instructions"] == "Be accurate."
     assert body["input"] == "Question?"
     assert body["max_output_tokens"] == llm.API_MAX_TOKENS
+
+
+@pytest.fixture
+def chatgpt(mock_api):
+    openai = pytest.importorskip("openai")
+    llm._clients["openai"] = openai.OpenAI(api_key="test", base_url=f"{mock_api.url}/v1", max_retries=0)
+    return mock_api
+
+
+def openai_stream(*texts, end="response.completed"):
+    events = [("response.output_text.delta", {"type": "response.output_text.delta", "sequence_number": i,
+                                               "item_id": "m1", "output_index": 0, "content_index": 0,
+                                               "delta": text, "logprobs": []})
+              for i, text in enumerate(texts)]
+    events.append((end, {"type": end, "sequence_number": len(texts),
+                         "response": {"id": "resp_1", "object": "response", "status": end.split(".")[-1]}}))
+    return {"__sse__": events}
+
+
+def test_chatgpt_streams(chatgpt):
+    chatgpt.responses["/v1/responses"] = openai_stream("Monthly ", "[S1].")
+    assert list(llm._openai_stream("Be accurate.", "Question?")) == ["Monthly ", "[S1]."]
+    assert chatgpt.last()["body"]["stream"] is True
+
+
+def test_chatgpt_failed_stream_raises(chatgpt):
+    chatgpt.responses["/v1/responses"] = openai_stream("Mon", end="response.failed")
+    with pytest.raises(llm.ProviderError, match="failed"):
+        list(llm._openai_stream("system", "prompt"))
 
 
 # --- Gemini ------------------------------------------------------------------------
@@ -151,6 +229,15 @@ def test_gemini_request_and_answer(gemini):
     assert f"/models/{llm.GEMINI_MODEL}:generateContent" in request["path"]
     assert request["body"]["systemInstruction"]["parts"][0]["text"] == "Be accurate."
     assert request["body"]["generationConfig"]["maxOutputTokens"] == llm.API_MAX_TOKENS
+
+
+def test_gemini_streams(gemini):
+    gemini.responses[":streamGenerateContent"] = {"__sse__": [
+        (None, {"candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}]})
+        for text in ("Monthly ", "[S1].")
+    ]}
+    assert list(llm._gemini_stream("Be accurate.", "Question?")) == ["Monthly ", "[S1]."]
+    assert ":streamGenerateContent" in gemini.last()["path"]
 
 
 def test_gemini_blocked_response_raises_provider_error(gemini):

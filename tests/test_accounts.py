@@ -110,9 +110,7 @@ def test_members_share_a_workspace(client, supabase):
     owner, guest = as_user(sub="owner", email="owner@example.org"), as_user(sub="guest", email="guest@example.org")
     workspace = client.get("/me", headers=owner).json()["workspaces"][0]["id"]
 
-    missing = client.post(f"/workspaces/{workspace}/members", headers=owner, json={"email": "guest@example.org"})
-    assert missing.status_code == 404  # guest hasn't signed up yet
-    client.get("/me", headers=guest)  # guest signs in once
+    client.get("/me", headers=guest)  # guest has an account
     members = client.post(f"/workspaces/{workspace}/members", headers=owner,
                           json={"email": "GUEST@example.org"}).json()["members"]
     assert {m["email"]: m["role"] for m in members} == {"owner@example.org": "owner", "guest@example.org": "member"}
@@ -166,3 +164,28 @@ def test_deleting_an_account_removes_its_data(client, supabase, fake_model):
     assert db.get_workspace(owned, "owner") is None
     assert [m["id"] for m in client.get(f"/workspaces/{guest_space}/members", headers=guest).json()["members"]] == ["guest"]
     assert client.get("/me", headers=owner).json()["workspaces"][0]["id"] != owned  # signs in fresh
+
+
+def test_people_without_an_account_are_invited_and_join_on_sign_in(client, supabase):
+    owner = as_user(sub="owner", email="owner@example.org")
+    workspace = client.get("/me", headers=owner).json()["workspaces"][0]["id"]
+    invited = client.post(f"/workspaces/{workspace}/members", headers=owner, json={"email": "New.Person@Example.org"}).json()
+    assert "joins this workspace when they sign up" in invited["message"]
+    assert [i["email"] for i in invited["invitations"]] == ["new.person@example.org"]
+    assert [m["email"] for m in invited["members"]] == ["owner@example.org"]
+
+    newcomer = as_user(sub="new", email="new.person@example.org")
+    workspaces = client.get("/me", headers=newcomer).json()["workspaces"]
+    assert workspace in [w["id"] for w in workspaces]  # joined on first sign-in
+    team = client.get(f"/workspaces/{workspace}/members", headers=owner).json()
+    assert team["invitations"] == []
+    assert {m["email"] for m in team["members"]} == {"owner@example.org", "new.person@example.org"}
+
+
+def test_owners_can_cancel_invitations(client, supabase):
+    owner = as_user(sub="owner", email="owner@example.org")
+    workspace = client.get("/me", headers=owner).json()["workspaces"][0]["id"]
+    client.post(f"/workspaces/{workspace}/members", headers=owner, json={"email": "late@example.org"})
+    assert client.delete(f"/workspaces/{workspace}/invitations/late@example.org", headers=owner).json()["invitations"] == []
+    later = as_user(sub="late", email="late@example.org")
+    assert workspace not in [w["id"] for w in client.get("/me", headers=later).json()["workspaces"]]

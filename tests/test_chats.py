@@ -207,3 +207,53 @@ def test_question_language(question, language):
 def test_no_passages_message_uses_the_question_language(indexed, fake_model):
     body = indexed.post("/ask", json={"question": "Rais wa kwanza wa Tanzania alikuwa nani?"}).json()
     assert body["answer"] == answers.CANNED["no_sources"]["sw"]
+
+
+def test_sharing_a_chat_with_the_workspace(client, fake_model, monkeypatch):
+    from backend import config
+    from test_accounts import SECRET, as_user
+
+    monkeypatch.setattr(config, "AUTH_MODE", "supabase")
+    monkeypatch.setattr(config, "SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setattr(config, "SUPABASE_JWT_SECRET", SECRET)
+    owner, guest = as_user(sub="owner", email="owner@example.org"), as_user(sub="guest", email="guest@example.org")
+    workspace = client.get("/me", headers=owner).json()["workspaces"][0]["id"]
+    client.get("/me", headers=guest)
+    client.post(f"/workspaces/{workspace}/members", headers=owner, json={"email": "guest@example.org"})
+    client.post("/documents/upload", headers=owner, files=[("files", ("g.txt", SOLAR_GUIDE, "text/plain"))])
+    client.post("/documents/index", headers=owner)
+    chat_id = client.post("/ask", headers=owner, json={"question": QUESTION, "save": True}).json()["chat_id"]
+    in_shared = {**guest, "X-Workspace-Id": workspace}
+
+    assert client.get(f"/chats/{chat_id}", headers=in_shared).status_code == 404  # private until shared
+    assert client.patch(f"/chats/{chat_id}", headers=in_shared, json={"shared": True}).status_code == 404
+    assert client.patch(f"/chats/{chat_id}", headers=owner, json={"shared": True}).json()["shared"] == 1
+
+    listed = client.get("/chats", headers=in_shared).json()
+    assert listed["chats"] == [] and [c["id"] for c in listed["shared"]] == [chat_id]
+    assert listed["shared"][0]["owner_name"] == "Owner"
+    seen = client.get(f"/chats/{chat_id}", headers=in_shared).json()
+    assert seen["mine"] is False and len(seen["messages"]) == 2
+    # Read-only: the guest can't continue, rename or delete it.
+    assert client.post("/ask", headers=in_shared, json={"question": QUESTION, "chat_id": chat_id}).status_code == 404
+    assert client.delete(f"/chats/{chat_id}", headers=in_shared).status_code == 404
+
+    client.patch(f"/chats/{chat_id}", headers=owner, json={"shared": False})
+    assert client.get(f"/chats/{chat_id}", headers=in_shared).status_code == 404
+
+
+def test_old_databases_get_the_shared_column(app_env, tmp_path, monkeypatch):
+    import sqlite3
+
+    from backend import config, db
+
+    old = tmp_path / "old"
+    old.mkdir()
+    conn = sqlite3.connect(old / "afrisearch.db")
+    conn.execute("CREATE TABLE chats (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, "
+                 "title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(config, "DATA_DIR", old)
+    with db.connect() as c:
+        assert "shared" in {row[1] for row in c.execute("PRAGMA table_info(chats)")}

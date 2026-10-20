@@ -35,29 +35,34 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 
 ### Answers and search
 - [ ] **More evaluation questions** in Somali, Afaan Oromo and Hausa (M): there's only one each, which is too few to judge. Ask pilot users for real questions and documents.
-- [ ] **Check the reranker on Amharic** (S): one case where it ranked the wrong document first. Compare `--modes semantic rerank` on Amharic questions only, and turn reranking off for Ethiopic script if it hurts.
+- [x] **Check the reranker on Amharic**: it helps. Right document first for 5/6 Amharic questions with it, 4/6 without (English 25/25 vs 22/25). Kept on for all scripts.
+- [ ] **Watch the reranker on Swahili** (S): 4/5 with it vs 5/5 without (`sw-money-stolen`). One question is too few to act on; recheck with more Swahili questions.
 - [ ] **Tune the "not covered" threshold** (S) from real feedback: −4 stopped more off-topic questions on the test set but sits closer to real answers. *(`AFRISEARCH_MIN_RERANK_SCORE`)*
-- [ ] **Stream answers from Claude, ChatGPT and Gemini** (M): today only local models stream. *(backend/llm.py: add a `stream` function per provider)*
-- [ ] **Flag answers without citations** (S): show a "no source cited" warning when the model didn't cite anything.
-- [ ] **"Try again with another model"** button on an answer (S).
-- [ ] **Load the search model and reranker at startup** (S, optional setting): the first question currently waits about 10 s while they load.
+- [x] **Stream answers from Claude, ChatGPT and Gemini**; text streamed before a refusal is discarded.
+- [x] **Flag answers without citations**.
+- [x] **"Try again with another model"** button on an answer.
+- [x] **Load the search model and reranker at startup** (`AFRISEARCH_PRELOAD_MODELS=0` to turn off).
 
 ### Team features
-- [ ] **Invite people who haven't signed up yet** (M): an email invitation link, instead of "ask them to sign up first". Needs transactional email (below).
-- [ ] **Share a chat** with the rest of the workspace (S, read-only).
+- [x] **Invite people who haven't signed up yet**: they join the workspace when they first sign in with that email.
+- [ ] **Send the invitation by email** (S): needs transactional email; today the owner tells them.
+- [x] **Share a chat** with the rest of the workspace (read-only).
 - [ ] **Rename chats automatically** from the first answer, instead of the truncated question (S).
 
 ### Library
-- [ ] **Word, Excel, PowerPoint, HTML and Markdown** documents (M): `python-docx`, `openpyxl`, `python-pptx`. *(backend/extract.py)*
-- [ ] **Replace a document with a new version** (S): keep the name, re-index, and leave old chats readable.
-- [ ] **Folders or tags**, and **bulk delete** (M).
+- [x] **Word, Excel, PowerPoint, HTML, Markdown and CSV** documents. Old binary formats (.doc, .xls, .ppt) are rejected with a hint to re-save.
+- [x] **Replace a document with a new version**; old chats keep their quoted passages.
+- [x] **Bulk delete**.
+- [ ] **Folders or tags** (M).
 - [ ] **Email when a long indexing job finishes** (S): needs transactional email.
-- [ ] **Upload from the phone camera** (S): `<input capture="environment">` on mobile.
+- [x] **Upload from the phone camera** ("Take a photo" on phones).
 
 ### Web app
-- [ ] **End-to-end browser tests in the repo** (M): turn the Playwright journey used for 0.2 (upload → OCR → chat → citations → insights) into `web/e2e/`, and run it in CI.
-- [ ] **Accessibility pass** (M): keyboard focus inside popovers and dialogs (focus trap), screen-reader labels, contrast in dark mode.
-- [ ] **Pagination** for long chat lists (capped at 100) and big libraries (S).
+- [x] **End-to-end browser tests** in `web/e2e/`, run in CI against the real API with fake models.
+- [x] **Focus trap** in dialogs and drawers.
+- [ ] **Accessibility, the rest** (M): popovers, screen-reader labels, dark-mode contrast.
+- [x] **Pagination** for big libraries (50 at a time).
+- [ ] **Pagination for chat lists** (S): still capped at 100.
 
 ---
 

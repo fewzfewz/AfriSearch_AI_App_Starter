@@ -9,6 +9,11 @@ import { initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
 import { useTheme } from "../lib/theme";
 import type { DocumentsResponse, Member } from "../lib/types";
+
+interface Team {
+  members: Member[];
+  invitations: { email: string; created_at: string }[];
+}
 import { useWorkspace } from "../lib/workspace";
 
 function Section({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
@@ -54,7 +59,7 @@ export function SettingsPage() {
   };
   const accountConfirmWord = user?.email || "DELETE";
   const ownedWorkspaces = workspaces.filter((w) => w.role === "owner");
-  const members = useApi<{ members: Member[] }>(current ? `/workspaces/${current.id}/members` : null);
+  const members = useApi<Team>(current ? `/workspaces/${current.id}/members` : null);
   const system = useApi<DocumentsResponse>("/documents");
   const multiUser = config?.auth === "supabase";
 
@@ -74,10 +79,10 @@ export function SettingsPage() {
   const invite = async () => {
     setInviting(true);
     try {
-      const result = await api<{ members: Member[] }>(`/workspaces/${current!.id}/members`, { json: { email: email.trim() } });
+      const result = await api<Team & { message: string }>(`/workspaces/${current!.id}/members`, { json: { email: email.trim() } });
       members.setData(result);
       setEmail("");
-      toast("Member added");
+      toast(result.message);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -87,7 +92,7 @@ export function SettingsPage() {
 
   const removeMember = async (member: Member) => {
     try {
-      const result = await api<{ members: Member[] }>(`/workspaces/${current!.id}/members/${member.id}`, { method: "DELETE" });
+      const result = await api<Team>(`/workspaces/${current!.id}/members/${member.id}`, { method: "DELETE" });
       if (member.id === user?.id) {
         await reload();
         switchTo(workspaces.find((w) => w.id !== current!.id)?.id ?? "");
@@ -130,6 +135,24 @@ export function SettingsPage() {
                 )}
               </div>
             ))}
+            {(members.data?.invitations ?? []).map((invitation) => (
+              <div key={invitation.email} className="flex items-center gap-3 px-4 py-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-dashed border-ink-300 text-xs text-ink-400 dark:border-ink-700">
+                  {initials("", invitation.email)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{invitation.email}</p>
+                  <p className="truncate text-xs text-ink-500">Joins when they sign up or sign in with this email</p>
+                </div>
+                <Badge tone="amber">invited</Badge>
+                {isOwner && (
+                  <Button size="sm" variant="ghost" onClick={async () => {
+                    const result = await api<Team>(`/workspaces/${current!.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: "DELETE" });
+                    members.setData(result);
+                  }}>Cancel</Button>
+                )}
+              </div>
+            ))}
           </Card>
           {multiUser && isOwner && (
             <div className="mt-3 flex gap-2">
@@ -138,7 +161,11 @@ export function SettingsPage() {
               <Button icon={<UserPlus className="h-4 w-4" />} loading={inviting} disabled={!email.includes("@")} onClick={invite}>Add</Button>
             </div>
           )}
-          {multiUser && isOwner && <p className="mt-2 text-xs text-ink-500">They need to have signed up to AfriSearch first.</p>}
+          {multiUser && isOwner && (
+            <p className="mt-2 text-xs text-ink-500">
+              People without an account are invited: they join automatically when they sign up with that email. Send them the link to this site.
+            </p>
+          )}
         </Section>
 
         <Section title="Appearance">

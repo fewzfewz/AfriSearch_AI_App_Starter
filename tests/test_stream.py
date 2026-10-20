@@ -67,13 +67,14 @@ def test_errors_during_generation_become_error_events(indexed, streaming_model):
     result = events(indexed.post("/ask/stream", json=QUESTION))
     assert [e["type"] for e in result] == ["sources", "token", "error"]
     assert result[-1]["detail"] == "The model refused."
+    assert result[-1]["discard_partial"] is True  # the streamed text was not a real answer
 
 
 def test_unexpected_errors_name_the_provider(indexed, streaming_model):
     pieces, _ = streaming_model
     pieces[:] = [ConnectionError("network down")]
     result = events(indexed.post("/ask/stream", json=QUESTION))
-    assert result[-1] == {"type": "error", "detail": "fake failed: network down"}
+    assert result[-1] == {"type": "error", "detail": "fake failed: network down", "discard_partial": False}
 
 
 def test_no_relevant_passages(indexed, streaming_model):

@@ -17,6 +17,15 @@ Ready for a pilot: security, limits, backups, legal pages and account controls.
 - Download my data (zip) and delete my account in Settings; with `SUPABASE_SERVICE_ROLE_KEY`, the sign-in account is deleted too.
 - "No passages" and "not covered" messages in Amharic and Swahili when the question is.
 - Deployment guide (`docs/deploy.md`), Caddyfile and production compose file.
+- Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML, Markdown and CSV documents.
+- Invite people who haven't signed up yet; they join when they first sign in with that email. Owners can cancel pending invitations.
+- Answers from Claude, ChatGPT and Gemini stream as they're written. If the model refuses partway, the partial text is discarded.
+- A warning on answers that don't cite any passage, and "Try again with another model" on every answer.
+- Library: upload a new version of a document, select and delete several at once, take a photo on phones, and show 50 documents at a time.
+- Share a chat read-only with the workspace; shared chats appear under "Shared with you".
+- The search model and reranker load at startup (`AFRISEARCH_PRELOAD_MODELS=0` to turn off).
+- Keyboard focus stays inside open dialogs and returns afterwards.
+- Browser tests (Playwright, `web/e2e/`) run in CI against the real API with fake models.
 
 ### Fixed
 - Ratings could be attached to another member's message in a shared workspace.

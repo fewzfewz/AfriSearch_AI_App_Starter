@@ -4,7 +4,7 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![version 0.2.0](https://img.shields.io/badge/version-0.2.0-orange.svg)
 
-Ask questions about your own documents in English, Amharic, Swahili and 90+ other languages. Upload PDFs, text files or photos of pages; AfriSearch finds the relevant passages and writes an answer that cites them, with the original page one click away.
+Ask questions about your own documents in English, Amharic, Swahili and 90+ other languages. Upload PDFs, Word, Excel and PowerPoint files, text, or photos of pages; AfriSearch finds the relevant passages and writes an answer that cites them, with the original page one click away.
 
 **Quick start with Docker**
 
@@ -19,7 +19,8 @@ Then open http://127.0.0.1:8000. The first start downloads about 1 GB of models.
 ## Features
 
 **Documents**
-- Upload PDF, TXT and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP) by drag and drop; exact duplicates are rejected
+- Upload PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML, Markdown, CSV, TXT and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP) by drag and drop, or with the camera on a phone; exact duplicates are rejected
+- Upload a new version of a document, or select several and delete them
 - OCR for scanned PDFs and photos with Tesseract (English, Amharic and Swahili by default), page by page, so mixed PDFs work
 - Indexing runs in the background with live progress (file, page, stage); you can keep working meanwhile
 - Library with type, pages, passages, OCR status, size and date; read a document's passages, open the original, delete
@@ -27,7 +28,7 @@ Then open http://127.0.0.1:8000. The first start downloads about 1 GB of models.
 **Asking**
 - Chat-style questions with saved conversation history; short follow-up questions use the earlier context
 - Multilingual search (94 languages, across languages) with a multilingual reranker
-- Answers stream as they're written (local models), in the question's language, with `[S1]` citations that open the source passage; the original PDF opens at the cited page
+- Answers stream as they're written (local models, Claude, ChatGPT and Gemini), in the question's language, with `[S1]` citations that open the source passage; the original PDF opens at the cited page
 - Questions the documents don't cover are answered with "not covered" and the closest passages, instead of a guess
 - Answers from **Claude, ChatGPT, Gemini** or a **local model**; or **find passages only**, with nothing sent to an AI model
 - Limit a question to chosen documents; copy, rate (👍/👎 with a comment) or download any answer as Markdown
@@ -47,7 +48,7 @@ backend/auth.py     Sign-in: verifies Supabase tokens, or a single local user wh
 backend/db.py       SQLite: users, workspaces, members, chats, messages, feedback, indexing jobs
 backend/store.py    Per-workspace uploads and search index (chunks + embeddings)
 backend/jobs.py     Background indexing with progress
-backend/extract.py  PDF/TXT/image text extraction and OCR
+backend/extract.py  Text from PDF, Office, HTML, text and images; OCR
 backend/models.py   Search model and reranker
 backend/answers.py  Prompts, "not covered" rule, follow-up handling
 backend/llm.py      Answer-model providers (Claude, ChatGPT, Gemini, local Transformers models)
@@ -221,7 +222,8 @@ The default search model is [`intfloat/multilingual-e5-small`](https://huggingfa
 
 The default reranker is [`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`](https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) (Apache 2.0, about 470 MB, multilingual). It downloads the first time a question is reranked.
 
-- **Speed:** on a 4-core laptop CPU the first reranked question takes about 10 s while the model loads; after that reranking adds about 0.5 s per question.
+- **Speed:** the search model and reranker load in the background when the API starts (about 10 s on a 4-core laptop CPU; `AFRISEARCH_PRELOAD_MODELS=0` loads them on first use instead). After that reranking adds about 0.5 s per question.
+- **Languages:** on the evaluation set it puts the right document first more often in English (25/25 vs 22/25) and Amharic (5/6 vs 4/6); in Swahili it lost one question (4/5 vs 5/5).
 - **What it changes:** the order of the passages, and whether the answer model is asked at all (see *Questions your documents don't answer* below). The relevance cutoff still uses the search model's score, and the **% match** on source cards still shows that score.
 - **Turning it off:** switch off **Rerank passages** under **Options** below the question box, send `"rerank": false` to `/api/ask`, or set `AFRISEARCH_RERANKER=off` to never load it. `AFRISEARCH_RERANKER` also takes another cross-encoder model id.
 
@@ -265,6 +267,7 @@ If your documents are full of codes the search model confuses, measure it on you
 | `AFRISEARCH_MIN_SCORE` | `0.75` for E5 models, `0.2` otherwise | Passages less similar than this are ignored |
 | `AFRISEARCH_QUERY_PREFIX` / `AFRISEARCH_PASSAGE_PREFIX` | `query: ` / `passage: ` for E5 models | Text added before questions / passages when embedding |
 | `AFRISEARCH_RERANKER` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Reranking model; `off` disables reranking |
+| `AFRISEARCH_PRELOAD_MODELS` | `1` | Load the search model and reranker when the API starts; `0` loads them on first use |
 | `AFRISEARCH_MIN_RERANK_SCORE` | `-5` | Below this best reranker score, a question counts as not covered |
 | `AFRISEARCH_RERANK_GAP` | `5` | Passages scoring this far below the best reranked one aren't given to the model |
 | `AFRISEARCH_OCR_LANGS` | `eng+amh+swa` | Tesseract languages, joined with `+`; ones not installed are skipped |
@@ -303,12 +306,13 @@ All endpoints are under `/api`; interactive docs at `/api/docs`. With sign-in on
 | `GET` | `/api/documents` | Documents with details, counts, search model, reranker, OCR status |
 | `GET` | `/api/documents/{id}/passages` | A document's indexed passages |
 | `GET` | `/api/documents/{id}/file` | The original uploaded file |
+| `POST` | `/api/documents/{id}/replace` | Upload a new version (multipart field `file`); index afterwards |
 | `DELETE` | `/api/documents/{id}` | Delete a document |
 | `GET` | `/api/providers` | Answer models, whether each is available, and why not |
 | `POST` | `/api/ask` | `{"question", "top_k", "provider", "rerank", "generate_answer", "source_ids", "chat_id", "save"}` → answer, sources, `covered`, chat and message ids |
-| `POST` | `/api/ask/stream` | Same request; newline-delimited JSON events: `sources`, `token` pieces, then `done` or `error` |
-| `GET`, `POST` | `/api/chats` | The user's chats in the workspace, or create one |
-| `GET`, `PATCH`, `DELETE` | `/api/chats/{id}` | A chat with its messages; rename; delete |
+| `POST` | `/api/ask/stream` | Same request; newline-delimited JSON events: `sources`, `token` pieces, then `done` or `error` (`discard_partial` when the streamed text should be thrown away) |
+| `GET`, `POST` | `/api/chats` | The user's chats in the workspace and chats others shared with it, or create one |
+| `GET`, `PATCH`, `DELETE` | `/api/chats/{id}` | A chat with its messages (own or shared); rename or share (`{"title", "shared"}`); delete |
 | `POST`, `GET` | `/api/feedback` | Rate an answer (`message_id` links it to a chat message); totals and recent ratings |
 | `GET` | `/api/insights` | Usage, questions per day, most-cited documents, ratings |
 | `GET` | `/api/health` | 200 when the database and data folder work, 503 otherwise; version, models, OCR |
@@ -319,6 +323,7 @@ All endpoints are under `/api`; interactive docs at `/api/docs`. With sign-in on
 pytest -q                      # backend: fake models, fake OCR, temporary data; no downloads or keys
 cd web && npm test             # web app unit tests
 cd web && npm run typecheck
+cd web && npm run build && E2E_PYTHON=python npm run e2e   # browser tests (npx playwright install chromium first)
 ```
 
 | File | Covers |
@@ -334,9 +339,11 @@ cd web && npm run typecheck
 | `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract |
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests against a local mock server |
 | `tests/test_text_processing.py`, `tests/test_evaluation_scoring.py` | Chunking, citations, grading rules |
+| `tests/test_formats.py` | Word, Excel, PowerPoint, HTML, Markdown and CSV extraction and search |
 | `web/src/lib/format.test.ts` | Citation links, stream parsing, formatting |
+| `web/e2e/` | In a real browser, against the API with fake models (`tests/e2e/server.py`): upload, ask, citations, ratings, passages-only search, dialog focus |
 
-GitHub Actions runs the backend tests, the web app checks and build, and a Docker build on every push and pull request.
+GitHub Actions runs the backend tests, the web app checks and build, the browser tests and a Docker build on every push and pull request.
 
 ## Evaluating answer quality
 
@@ -393,7 +400,7 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 
 ## Notes and limitations
 
-- PDF, TXT and common image formats are supported; Word, Excel and other formats aren't yet.
+- Old binary Office formats (.doc, .xls, .ppt) aren't supported; save them as .docx, .xlsx or .pptx.
 - Answers and citations can be wrong, especially from the small local model. Every answer links to its sources.
 - With a cloud model, the passages needed for an answer are sent to that provider; use a local model for sensitive documents.
 - Data is stored in SQLite and files on one server. That suits a pilot; many concurrent users need PostgreSQL and object storage (see the roadmap).

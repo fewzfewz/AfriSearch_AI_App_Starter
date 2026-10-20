@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS members (
     added_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS invitations (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    invited_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, email)
+);
+CREATE INDEX IF NOT EXISTS invitations_by_email ON invitations (email);
 CREATE TABLE IF NOT EXISTS chats (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
@@ -85,6 +93,13 @@ _initialized: set[str] = set()
 _init_lock = threading.Lock()
 
 
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring databases created by earlier versions up to the current schema."""
+    chat_columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
+    if "shared" not in chat_columns:  # added in 0.3: chats shared read-only with the workspace
+        conn.execute("ALTER TABLE chats ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -105,6 +120,7 @@ def connect() -> Iterator[sqlite3.Connection]:
             if str(path) not in _initialized:
                 conn.execute("PRAGMA journal_mode = WAL")  # readers don't block the writer
                 conn.executescript(SCHEMA)
+                migrate(conn)
                 _initialized.add(str(path))
         with conn:  # commits on success, rolls back on error
             yield conn
@@ -125,13 +141,39 @@ def _row(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
 # --- users and workspaces ---------------------------------------------------------
 
 def ensure_user(user_id: str, email: str, name: str) -> None:
-    """Create the user on first sight; keep email and name up to date."""
+    """Create the user on first sight; keep email and name up to date; accept invitations."""
     with connect() as conn:
         conn.execute(
             "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET email = excluded.email, name = excluded.name",
             (user_id, email, name, now()),
         )
+        if email:
+            # Invitations to this email turn into memberships the first time they sign in.
+            conn.execute(
+                "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) "
+                "SELECT workspace_id, ?, 'member', ? FROM invitations WHERE email = lower(?)",
+                (user_id, now(), email),
+            )
+            conn.execute("DELETE FROM invitations WHERE email = lower(?)", (email,))
+
+
+def invite(workspace_id: str, email: str, invited_by: str) -> None:
+    with connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO invitations VALUES (?, lower(?), ?, ?)",
+                     (workspace_id, email.strip(), invited_by, now()))
+
+
+def list_invitations(workspace_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT email, created_at FROM invitations WHERE workspace_id = ? ORDER BY created_at",
+                            (workspace_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def cancel_invitation(workspace_id: str, email: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM invitations WHERE workspace_id = ? AND email = lower(?)", (workspace_id, email))
 
 
 def find_user_by_email(email: str) -> dict[str, Any] | None:
@@ -232,16 +274,17 @@ def delete_user(user_id: str) -> None:
 
 def create_chat(workspace_id: str, user_id: str, title: str) -> dict[str, Any]:
     chat = {"id": new_id(), "workspace_id": workspace_id, "user_id": user_id, "title": title[:120] or "New chat",
-            "created_at": now(), "updated_at": now()}
+            "created_at": now(), "updated_at": now(), "shared": 0}
     with connect() as conn:
-        conn.execute("INSERT INTO chats VALUES (:id, :workspace_id, :user_id, :title, :created_at, :updated_at)", chat)
+        conn.execute("INSERT INTO chats (id, workspace_id, user_id, title, created_at, updated_at, shared) "
+                     "VALUES (:id, :workspace_id, :user_id, :title, :created_at, :updated_at, :shared)", chat)
     return chat
 
 
 def list_chats(workspace_id: str, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT c.id, c.title, c.created_at, c.updated_at, "
+            "SELECT c.id, c.title, c.created_at, c.updated_at, c.shared, "
             "(SELECT count(*) FROM messages WHERE chat_id = c.id AND role = 'user') AS questions "
             "FROM chats c WHERE c.workspace_id = ? AND c.user_id = ? ORDER BY c.updated_at DESC LIMIT ?",
             (workspace_id, user_id, limit),
@@ -253,6 +296,35 @@ def get_chat(chat_id: str, workspace_id: str, user_id: str) -> dict[str, Any] | 
     with connect() as conn:
         return _row(conn.execute("SELECT * FROM chats WHERE id = ? AND workspace_id = ? AND user_id = ?",
                                  (chat_id, workspace_id, user_id)).fetchone())
+
+
+def get_visible_chat(chat_id: str, workspace_id: str, user_id: str) -> dict[str, Any] | None:
+    """A chat the user may read: their own, or one shared with the workspace (with its owner)."""
+    with connect() as conn:
+        return _row(conn.execute(
+            "SELECT c.*, u.name AS owner_name, u.email AS owner_email FROM chats c "
+            "LEFT JOIN users u ON u.id = c.user_id "
+            "WHERE c.id = ? AND c.workspace_id = ? AND (c.user_id = ? OR c.shared = 1)",
+            (chat_id, workspace_id, user_id),
+        ).fetchone())
+
+
+def list_shared_chats(workspace_id: str, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Chats other members have shared with the workspace."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.title, c.created_at, c.updated_at, u.name AS owner_name, "
+            "(SELECT count(*) FROM messages WHERE chat_id = c.id AND role = 'user') AS questions "
+            "FROM chats c LEFT JOIN users u ON u.id = c.user_id "
+            "WHERE c.workspace_id = ? AND c.shared = 1 AND c.user_id != ? ORDER BY c.updated_at DESC LIMIT ?",
+            (workspace_id, user_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_chat_shared(chat_id: str, shared: bool) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE chats SET shared = ? WHERE id = ?", (int(shared), chat_id))
 
 
 def rename_chat(chat_id: str, title: str) -> None:

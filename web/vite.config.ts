@@ -9,5 +9,5 @@ export default defineConfig({
     port: 5173,
     proxy: { "/api": { target: process.env.AFRISEARCH_API_URL ?? "http://127.0.0.1:8000", changeOrigin: true } },
   },
-  test: { environment: "node" },
+  test: { environment: "node", exclude: ["e2e/**", "node_modules/**"] },
 });

@@ -20,7 +20,9 @@ MAX_FILES_PER_UPLOAD = 20
 # Total size of uploads per workspace; 0 means no limit.
 WORKSPACE_QUOTA_BYTES = int(float(os.getenv("AFRISEARCH_WORKSPACE_QUOTA_MB", "500")) * 1024 * 1024)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
-ALLOWED_EXTENSIONS = {".pdf", ".txt"} | IMAGE_EXTENSIONS
+OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".html", ".htm"}
+ALLOWED_EXTENSIONS = {".pdf"} | TEXT_EXTENSIONS | OFFICE_EXTENSIONS | IMAGE_EXTENSIONS
 CHUNK_SIZE = 180  # target words per chunk
 CHUNK_OVERLAP = 35  # words of whole sentences repeated from the previous chunk
 
