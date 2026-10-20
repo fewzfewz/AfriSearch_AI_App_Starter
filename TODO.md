@@ -45,7 +45,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 
 ### Team features
 - [x] **Invite people who haven't signed up yet**: they join the workspace when they first sign in with that email.
-- [ ] **Send the invitation by email** (S): needs transactional email; today the owner tells them.
+- [x] **Send the invitation by email** (Resend or SMTP).
 - [x] **Share a chat** with the rest of the workspace (read-only).
 - [ ] **Rename chats automatically** from the first answer, instead of the truncated question (S).
 
@@ -54,7 +54,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [x] **Replace a document with a new version**; old chats keep their quoted passages.
 - [x] **Bulk delete**.
 - [ ] **Folders or tags** (M).
-- [ ] **Email when a long indexing job finishes** (S): needs transactional email.
+- [x] **Email when a long indexing job finishes**.
 - [x] **Upload from the phone camera** ("Take a photo" on phones).
 
 ### Web app
@@ -72,11 +72,13 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [ ] **Decide pricing** with pilot users (S): what they value, and what each workspace costs to run (AI tokens, storage, CPU).
 - [ ] **Plans and limits in the database** (M): documents, storage and questions per month per plan; enforce them in the API and show them in Settings.
 - [ ] **Payments** (L): Stripe for cards; Chapa, Paystack or Flutterwave for local payment methods (Telebirr, M-Pesa…). Trials, invoices, and handling of webhooks.
-- [ ] **Track cloud-model cost per workspace** (M): log the tokens used for each answer.
+- [x] **Track cloud-model cost per workspace**: tokens and estimated cost per answer, shown in Insights.
+- [ ] **Confirm ChatGPT and Gemini prices** (S): only Claude's is built in; set `AFRISEARCH_MODEL_PRICES` from their price lists.
 - [ ] **Pricing section** on the landing page, once prices are decided (S).
 
 ### Operations
-- [ ] **Transactional email** (S): welcome, invitations, password reset branding, usage warnings (Resend, Postmark or SES).
+- [x] **Transactional email**: welcome, invitations, "documents ready" (Resend or SMTP).
+- [ ] **Usage warnings by email** (S), and Supabase's own emails through the same provider (setting, see docs/deploy.md).
 - [ ] **Admin dashboard** (M): workspaces, users, usage, errors, and a way to help users.
 - [ ] **Staging environment** and **deploy on tag** from GitHub Actions (M).
 - [ ] **Audit log** (M): who uploaded, deleted or shared what.

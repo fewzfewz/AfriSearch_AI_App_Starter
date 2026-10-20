@@ -92,10 +92,15 @@ export function LandingPage() {
       </header>
 
       <main>
+        <div className="relative isolate">
+        <div className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
+          <div className="bg-glow absolute inset-0" />
+          <div className="bg-dots absolute inset-0 opacity-70" />
+        </div>
         <section className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-20 pt-16 sm:px-6 lg:grid-cols-2 lg:pt-24">
           <div>
             <Badge tone="brand" className="px-2.5 py-1">Open source · cloud or on your own server</Badge>
-            <h1 className="mt-5 text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
+            <h1 className="mt-5 font-display text-5xl font-semibold leading-[1.05] sm:text-6xl lg:text-7xl">
               Answers from your documents, <span className="text-brand-700 dark:text-brand-500">in your language.</span>
             </h1>
             <p className="mt-5 max-w-xl text-lg leading-8 text-ink-600 dark:text-ink-400">
@@ -111,6 +116,7 @@ export function LandingPage() {
           <HeroIllustration />
         </section>
 
+        </div>
         <section className="border-y border-ink-100 bg-ink-50/60 py-8 dark:border-ink-900 dark:bg-ink-900/40" aria-label="Languages">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <p className="text-center text-sm font-medium text-ink-500">Ask and search in</p>
@@ -122,7 +128,7 @@ export function LandingPage() {
         </section>
 
         <section id="features" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-20 sm:px-6">
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Everything your documents know, one question away</h2>
+          <h2 className="font-display text-3xl font-semibold sm:text-4xl">Everything your documents know, one question away</h2>
           <p className="mt-3 max-w-2xl text-lg text-ink-600 dark:text-ink-400">Built for the documents and languages organisations across Africa actually work with.</p>
           <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {FEATURES.map(({ icon: Icon, title, text }) => (
@@ -137,7 +143,7 @@ export function LandingPage() {
 
         <section id="how" className="scroll-mt-20 bg-ink-950 py-20 text-white">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
-            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">How it works</h2>
+            <h2 className="font-display text-3xl font-semibold sm:text-4xl">How it works</h2>
             <div className="mt-12 grid gap-8 md:grid-cols-3">
               {[
                 [Upload, "1. Add your documents", "Drag in PDFs, text files or photos of pages. AfriSearch reads them, runs OCR on scans, and builds a private search index."],
@@ -158,7 +164,7 @@ export function LandingPage() {
         </section>
 
         <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Made for real work</h2>
+          <h2 className="font-display text-3xl font-semibold sm:text-4xl">Made for real work</h2>
           <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {USE_CASES.map(({ icon: Icon, title, text }) => (
               <div key={title} className="rounded-2xl bg-ink-50 p-6 dark:bg-ink-900">
@@ -174,7 +180,7 @@ export function LandingPage() {
           <div className="grid items-center gap-10 rounded-3xl border border-ink-200 p-8 dark:border-ink-800 sm:p-12 lg:grid-cols-2">
             <div>
               <Lock className="h-8 w-8 text-brand-700 dark:text-brand-500" />
-              <h2 className="mt-4 text-3xl font-bold tracking-tight">Your documents stay yours</h2>
+              <h2 className="mt-4 font-display text-3xl font-semibold">Your documents stay yours</h2>
               <p className="mt-3 text-lg leading-8 text-ink-600 dark:text-ink-400">
                 Run AfriSearch on your own server and choose a local AI model, and nothing leaves your network. Using a cloud model is your choice per question, and only the passages needed for the answer are sent.
               </p>
@@ -190,7 +196,7 @@ export function LandingPage() {
         </section>
 
         <section id="faq" className="mx-auto max-w-3xl scroll-mt-20 px-4 pb-20 sm:px-6">
-          <h2 className="text-3xl font-bold tracking-tight">Questions</h2>
+          <h2 className="font-display text-3xl font-semibold">Questions</h2>
           <div className="mt-8 divide-y divide-ink-200 border-y border-ink-200 dark:divide-ink-800 dark:border-ink-800">
             {FAQ.map(([question, answer]) => (
               <details key={question} className="group py-4">
@@ -206,7 +212,7 @@ export function LandingPage() {
 
         <section className="px-4 pb-20 sm:px-6">
           <div className="mx-auto max-w-6xl rounded-3xl bg-gradient-to-br from-brand-800 via-brand-700 to-amber-700 px-8 py-14 text-center text-white">
-            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Start asking your documents</h2>
+            <h2 className="font-display text-3xl font-semibold sm:text-4xl">Start asking your documents</h2>
             <p className="mx-auto mt-3 max-w-xl text-lg text-white/85">Set up a workspace, add a few documents, and ask your first question in minutes.</p>
             <Link to={start} className="mt-8 inline-flex h-12 items-center gap-2 rounded-xl bg-white px-6 font-semibold text-brand-800 shadow-lg hover:bg-brand-50">
               {startLabel} <ArrowRight className="h-4 w-4" />

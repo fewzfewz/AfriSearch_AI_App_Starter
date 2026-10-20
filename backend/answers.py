@@ -113,12 +113,13 @@ def build_prompt(question: str, sources: list[dict[str, Any]], history: list[dic
 
 def generate_answer(
     question: str, sources: list[dict[str, Any]], provider: str, history: list[dict[str, str]] | None = None,
+    usage: llm.Usage | None = None,
 ) -> str:
     if not sources:
         return canned("no_sources", question)
     if not is_covered(sources):
         return canned("not_covered", question)
-    return llm.generate(provider, SYSTEM_PROMPT, build_prompt(question, sources, history))
+    return llm.generate(provider, SYSTEM_PROMPT, build_prompt(question, sources, history), usage)
 
 
 def source_payload(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

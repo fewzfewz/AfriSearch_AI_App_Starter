@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, config, db, extract, jobs, limits, llm, models, store
+from backend import __version__, answers, config, db, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import User, current_user
 from backend.text import clean_citations
 
@@ -255,6 +255,7 @@ def public_config():
         "workspace_quota_mb": round(config.WORKSPACE_QUOTA_BYTES / 1024 / 1024) or None,
         "environment": config.ENVIRONMENT,
         "file_types": sorted(ext.lstrip(".") for ext in config.ALLOWED_EXTENSIONS),
+        "email": mailer.enabled(),
     }
 
 
@@ -370,7 +371,7 @@ def team(workspace_id: str) -> dict[str, Any]:
 @api.post("/workspaces/{workspace_id}/members", status_code=201)
 def add_member(workspace_id: str, body: MemberRequest, user: User = Depends(current_user)):
     """Add someone by email. People without an account yet are invited: they join on first sign-in."""
-    owned_workspace(workspace_id, user)
+    workspace = owned_workspace(workspace_id, user)
     email = body.email.strip()
     if "@" not in email:
         raise HTTPException(status_code=422, detail="Enter an email address.")
@@ -381,6 +382,9 @@ def add_member(workspace_id: str, body: MemberRequest, user: User = Depends(curr
     else:
         db.invite(workspace_id, email, user.id)
         message = f"Invitation saved. {email} joins this workspace when they sign up or sign in with that email."
+    mailer.send(mailer.invitation(email, user.name or user.email, workspace["name"], has_account=bool(invitee)))
+    if mailer.enabled():
+        message += " We've emailed them."
     return {**team(workspace_id), "message": message}
 
 
@@ -619,13 +623,23 @@ def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]
     }
 
 
+def account_usage(workspace: Workspace, provider: str | None, usage: llm.Usage) -> dict[str, Any] | None:
+    """Record the tokens an answer used against the workspace; returns them for the message."""
+    if not provider or not (usage.input_tokens or usage.output_tokens):
+        return None  # local models and canned answers cost nothing
+    model = llm.PROVIDERS[provider].model
+    cost = llm.cost_usd(model, usage)
+    db.record_usage(workspace.id, workspace.user.id, provider, model, usage.input_tokens, usage.output_tokens, cost)
+    return {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost_usd": cost}
+
+
 def save_turn(prepared: PreparedAsk, summary: dict[str, Any], answer: str | None, removed: list[str],
-              error: str | None, seconds: float) -> str | None:
+              error: str | None, seconds: float, usage: dict[str, Any] | None = None) -> str | None:
     """Store the answer in the chat; returns the assistant message id."""
     if not prepared.chat:
         return None
     data = {key: summary[key] for key in ("provider", "model", "reranked", "covered", "sources")}
-    data.update(removed_citations=removed, error=error, seconds=round(seconds, 1))
+    data.update(removed_citations=removed, error=error, seconds=round(seconds, 1), usage=usage)
     return db.add_message(prepared.chat["id"], "assistant", answer or "", data)["id"]
 
 
@@ -637,17 +651,21 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
     if prepared.chat:
         db.add_message(prepared.chat["id"], "user", request.question)
     answer, removed = None, []
+    usage = llm.Usage()
     if prepared.provider:
         try:
-            answer = answers.generate_answer(request.question, prepared.sources, prepared.provider, prepared.history)
+            answer = answers.generate_answer(request.question, prepared.sources, prepared.provider,
+                                             prepared.history, usage)
         except llm.ProviderError as exc:
+            account_usage(workspace, prepared.provider, usage)  # a refusal may still be billed
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             # SDK errors: bad API key, rate limits, network, model download, GPU memory...
             logger.exception("Answer generation with %s failed", prepared.provider)
             raise HTTPException(status_code=502, detail=f"{prepared.provider} failed: {exc}") from exc
         answer, removed = clean_citations(answer, len(prepared.sources))
-    message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started)
+    used = account_usage(workspace, prepared.provider, usage)
+    message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used)
     return {**summary, "answer": answer, "removed_citations": removed, "message_id": message_id}
 
 
@@ -675,6 +693,7 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
             yield event("done", answer=None, removed_citations=[], message_id=message_id)
             return
         pieces: list[str] = []
+        usage = llm.Usage()
         try:
             if not prepared.sources or not prepared.covered:
                 canned = answers.canned("not_covered" if prepared.sources else "no_sources", request.question)
@@ -682,7 +701,7 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                 yield event("token", text=canned)
             else:
                 prompt = answers.build_prompt(request.question, prepared.sources, prepared.history)
-                for piece in llm.stream(prepared.provider, answers.SYSTEM_PROMPT, prompt):
+                for piece in llm.stream(prepared.provider, answers.SYSTEM_PROMPT, prompt, usage):
                     pieces.append(piece)
                     yield event("token", text=piece)
         except Exception as exc:
@@ -694,11 +713,13 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
             else:
                 logger.exception("Answer generation with %s failed", prepared.provider)
                 detail = f"{prepared.provider} failed: {exc}"
-            save_turn(prepared, summary, "" if discard else "".join(pieces), [], detail, time.monotonic() - started)
+            used = account_usage(workspace, prepared.provider, usage)
+            save_turn(prepared, summary, "" if discard else "".join(pieces), [], detail, time.monotonic() - started, used)
             yield event("error", detail=detail, discard_partial=discard)
             return
         answer, removed = clean_citations("".join(pieces), len(prepared.sources))
-        message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started)
+        used = account_usage(workspace, prepared.provider, usage)
+        message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used)
         yield event("done", answer=answer, removed_citations=removed, message_id=message_id)
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
@@ -780,6 +801,8 @@ def insights(workspace: Workspace = Depends(current_workspace)):
         "bytes": sum(doc["bytes"] or 0 for doc in documents),
         **db.insights(workspace.id),
         "feedback": db.feedback_summary(workspace.id, limit=10),
+        # Hosted-model tokens and estimated cost this calendar month (UTC).
+        "usage": db.usage_summary(workspace.id, db.now()[:8] + "01"),
     }
 
 

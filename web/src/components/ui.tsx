@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -50,7 +51,7 @@ export function cx(...classes: (string | false | null | undefined)[]) {
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-brand-700 text-white hover:bg-brand-800 shadow-sm disabled:bg-brand-700/50",
+  primary: "bg-brand-gradient text-white shadow-sm shadow-brand-900/20 hover:brightness-110 active:brightness-95",
   secondary:
     "bg-white text-ink-800 ring-1 ring-ink-200 hover:bg-ink-50 shadow-sm dark:bg-ink-900 dark:text-ink-100 dark:ring-ink-700 dark:hover:bg-ink-800",
   ghost: "text-ink-600 hover:bg-ink-100 hover:text-ink-900 dark:text-ink-300 dark:hover:bg-ink-800 dark:hover:text-white",
@@ -75,7 +76,7 @@ export function Button({
   return (
     <button
       className={cx(
-        "inline-flex items-center justify-center rounded-lg font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:focus-visible:ring-offset-ink-950",
+        "inline-flex items-center justify-center rounded-xl font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:focus-visible:ring-offset-ink-950",
         sizes[size],
         VARIANTS[variant],
         className,
@@ -134,7 +135,7 @@ export function Spinner({ className }: { className?: string }) {
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cx("rounded-xl border border-ink-200 bg-white shadow-sm dark:border-ink-800 dark:bg-ink-900", className)}>
+    <div className={cx("rounded-2xl border border-ink-200/80 bg-white shadow-soft dark:border-ink-800 dark:bg-ink-900/70 dark:shadow-none", className)}>
       {children}
     </div>
   );
@@ -202,7 +203,7 @@ export function Modal({ open, onClose, title, children, footer, wide }: {
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={cx("relative w-full animate-fade-in rounded-2xl bg-white shadow-2xl dark:bg-ink-900", wide ? "max-w-2xl" : "max-w-md")}
+        className={cx("relative w-full animate-scale-in rounded-2xl bg-white shadow-2xl ring-1 ring-ink-900/5 dark:bg-ink-900 dark:ring-white/10", wide ? "max-w-2xl" : "max-w-md")}
       >
         <div className="flex items-center justify-between border-b border-ink-100 px-5 py-4 dark:border-ink-800">
           <h2 className="text-base font-semibold">{title}</h2>
@@ -272,7 +273,7 @@ export function Popover({ trigger, children, align = "left", width = "w-72", up 
       {open && (
         <div
           className={cx(
-            "absolute z-40 animate-fade-in rounded-xl border border-ink-200 bg-white p-1.5 shadow-xl dark:border-ink-700 dark:bg-ink-900",
+            "absolute z-40 animate-scale-in rounded-xl border border-ink-200/80 bg-white/95 p-1.5 shadow-lift backdrop-blur dark:border-ink-700 dark:bg-ink-900/95",
             width,
             align === "right" ? "right-0" : "left-0",
             up ? "bottom-full mb-2" : "top-full mt-2",
@@ -356,7 +357,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
 export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center px-6 py-14 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-400">{icon}</div>
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-brand-700 ring-1 ring-brand-100 dark:bg-brand-950 dark:text-brand-400 dark:ring-brand-900/60">{icon}</div>
       <h3 className="mt-4 text-base font-semibold">{title}</h3>
       {children && <div className="mt-1.5 max-w-sm text-sm text-ink-500 dark:text-ink-400">{children}</div>}
       {action && <div className="mt-5">{action}</div>}
@@ -364,14 +365,89 @@ export function EmptyState({ icon, title, children, action }: { icon: ReactNode;
   );
 }
 
+/** The magnifier mark on the brand gradient. */
+export function LogoMark({ className }: { className?: string }) {
+  // Each mark needs its own gradient id: a gradient defined in a hidden copy (e.g. the
+  // desktop sidebar on a phone) doesn't render for the others.
+  const gradient = `afrisearch-mark-${useId().replace(/:/g, "")}`;
+  return (
+    <svg viewBox="0 0 32 32" className={cx("shrink-0", className)} aria-hidden="true">
+      <defs>
+        <linearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#f97316" />
+          <stop offset="0.55" stopColor="#c2410c" />
+          <stop offset="1" stopColor="#b91c1c" />
+        </linearGradient>
+      </defs>
+      <rect width="32" height="32" rx="9" fill={`url(#${gradient})`} />
+      <circle cx="14" cy="14" r="7" fill="none" stroke="#fff" strokeWidth="3" />
+      <path d="M19 19l6 6" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A keyboard key, for shortcut hints. */
+export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <kbd className={cx("inline-flex h-5 min-w-5 items-center justify-center rounded border border-ink-200 bg-white px-1 font-sans text-[10px] font-medium text-ink-500 shadow-[0_1px_0] shadow-ink-200 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-400 dark:shadow-ink-950", className)}>
+      {children}
+    </kbd>
+  );
+}
+
+/** The title block at the top of a page. */
+export function PageHeader({ title, description, icon, actions }: { title: string; description?: ReactNode; icon?: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-3.5">
+        {icon && (
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-brand-50 text-brand-700 ring-1 ring-brand-100 dark:bg-brand-950/60 dark:text-brand-400 dark:ring-brand-900/60">
+            {icon}
+          </span>
+        )}
+        <div className="min-w-0">
+          <h1 className="font-display text-[28px] font-semibold leading-tight">{title}</h1>
+          {description && <p className="mt-0.5 text-sm text-ink-500 dark:text-ink-400">{description}</p>}
+        </div>
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+const STAT_TONES = {
+  brand: "bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-400",
+  green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400",
+  blue: "bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-400",
+  violet: "bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-400",
+  amber: "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400",
+};
+
+/** A number with a label, an icon and an optional hint. */
+export function Stat({ label, value, hint, icon, tone = "brand", className }: {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  icon?: ReactNode;
+  tone?: keyof typeof STAT_TONES;
+  className?: string;
+}) {
+  return (
+    <Card className={cx("p-4 sm:p-5", className)}>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-medium text-ink-500 dark:text-ink-400">{label}</p>
+        {icon && <span className={cx("flex h-8 w-8 shrink-0 items-center justify-center rounded-xl", STAT_TONES[tone])}>{icon}</span>}
+      </div>
+      <p className="mt-2 text-[26px] font-semibold leading-none tabular-nums tracking-tight">{value}</p>
+      {hint && <div className="mt-2 text-xs text-ink-400">{hint}</div>}
+    </Card>
+  );
+}
+
 export function Logo({ className, compact }: { className?: string; compact?: boolean }) {
   return (
     <span className={cx("inline-flex items-center gap-2 font-semibold tracking-tight", className)}>
-      <svg viewBox="0 0 32 32" className="h-7 w-7 shrink-0" aria-hidden="true">
-        <rect width="32" height="32" rx="8" fill="#c2410c" />
-        <circle cx="14" cy="14" r="7" fill="none" stroke="#fff" strokeWidth="3" />
-        <path d="M19 19l6 6" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
-      </svg>
+      <LogoMark className="h-7 w-7" />
       {!compact && <span className="text-lg">AfriSearch</span>}
     </span>
   );
@@ -399,7 +475,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-[calc(100%-2rem)] max-w-sm flex-col gap-2" aria-live="polite">
         {toasts.map((toast) => (
-          <div key={toast.id} className="pointer-events-auto flex animate-fade-in items-start gap-3 rounded-xl border border-ink-200 bg-white px-4 py-3 text-sm shadow-lg dark:border-ink-700 dark:bg-ink-900">
+          <div key={toast.id} className="pointer-events-auto flex animate-fade-in items-start gap-3 rounded-xl border border-ink-200/80 bg-white/95 px-4 py-3 text-sm shadow-lift backdrop-blur dark:border-ink-700 dark:bg-ink-900/95">
             {toast.tone === "success" ? (
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
             ) : (

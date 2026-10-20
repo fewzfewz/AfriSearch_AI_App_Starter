@@ -1,4 +1,4 @@
-"""Accounts, workspaces, chats, feedback and indexing jobs, in SQLite (DATA_DIR/afrisearch.db).
+"""Accounts, workspaces, chats, feedback, indexing jobs and model usage, in SQLite (DATA_DIR/afrisearch.db).
 
 Each call opens its own short-lived connection, so the functions are safe to use
 from request handlers and the indexing thread alike.
@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS jobs_by_workspace ON jobs (workspace_id, created_at);
+CREATE TABLE IF NOT EXISTS usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- '' once the user deleted their account
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd REAL,  -- NULL when the model's price isn't configured
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_by_workspace ON usage (workspace_id, created_at);
 """
 
 _initialized: set[str] = set()
@@ -140,9 +152,13 @@ def _row(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
 
 # --- users and workspaces ---------------------------------------------------------
 
-def ensure_user(user_id: str, email: str, name: str) -> None:
-    """Create the user on first sight; keep email and name up to date; accept invitations."""
+def ensure_user(user_id: str, email: str, name: str) -> bool:
+    """Create the user on first sight; keep email and name up to date; accept invitations.
+
+    Returns True when the user is new.
+    """
     with connect() as conn:
+        new = conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None
         conn.execute(
             "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET email = excluded.email, name = excluded.name",
@@ -156,6 +172,12 @@ def ensure_user(user_id: str, email: str, name: str) -> None:
                 (user_id, now(), email),
             )
             conn.execute("DELETE FROM invitations WHERE email = lower(?)", (email,))
+    return new
+
+
+def get_user(user_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        return _row(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
 
 def invite(workspace_id: str, email: str, invited_by: str) -> None:
@@ -267,6 +289,7 @@ def delete_user(user_id: str) -> None:
         conn.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))  # messages go with them
         conn.execute("DELETE FROM feedback WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE usage SET user_id = '' WHERE user_id = ?", (user_id,))  # kept for the workspace's bill
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
@@ -392,6 +415,41 @@ def feedback_summary(workspace_id: str, limit: int = 20) -> dict[str, Any]:
             (workspace_id, max(0, min(limit, 200))),
         ).fetchall()
     return {**dict(totals), "recent": [_row(row, "sources") for row in recent]}
+
+
+# --- model usage -------------------------------------------------------------------------
+
+def record_usage(workspace_id: str, user_id: str, provider: str, model: str,
+                 input_tokens: int, output_tokens: int, cost_usd: float | None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO usage (workspace_id, user_id, provider, model, input_tokens, output_tokens, cost_usd, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (workspace_id, user_id, provider, model, input_tokens, output_tokens, cost_usd, now()),
+        )
+
+
+def usage_summary(workspace_id: str, since: str) -> dict[str, Any]:
+    """Tokens and estimated cost of hosted-model answers since an ISO date, by model."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT provider, model, count(*) AS answers, sum(input_tokens) AS input_tokens, "
+            "sum(output_tokens) AS output_tokens, sum(cost_usd) AS cost_usd, "
+            "sum(cost_usd IS NULL) AS unpriced FROM usage WHERE workspace_id = ? AND created_at >= ? "
+            "GROUP BY provider, model ORDER BY answers DESC",
+            (workspace_id, since),
+        ).fetchall()
+    models = [dict(row) for row in rows]
+    priced = [m["cost_usd"] for m in models if m["cost_usd"] is not None]
+    return {
+        "since": since,
+        "answers": sum(m["answers"] for m in models),
+        "input_tokens": sum(m["input_tokens"] for m in models),
+        "output_tokens": sum(m["output_tokens"] for m in models),
+        "cost_usd": round(sum(priced), 4) if priced else None,
+        "unpriced_answers": sum(m["unpriced"] for m in models),
+        "models": models,
+    }
 
 
 # --- indexing jobs ----------------------------------------------------------------------

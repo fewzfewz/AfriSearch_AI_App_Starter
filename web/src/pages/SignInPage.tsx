@@ -37,7 +37,7 @@ function NewPasswordForm() {
   };
   return (
     <form onSubmit={submit} className="space-y-4">
-      <h1 className="text-2xl font-bold tracking-tight">Choose a new password</h1>
+      <h1 className="font-display text-2xl font-semibold">Choose a new password</h1>
       {error && <Alert tone="red">{error}</Alert>}
       <label className="block text-sm font-medium">New password
         <input type="password" autoComplete="new-password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} />
@@ -116,13 +116,13 @@ export function SignInPage() {
           {recovering ? <NewPasswordForm /> : sent ? (
             <div className="text-center">
               <MailCheck className="mx-auto h-10 w-10 text-brand-700" />
-              <h1 className="mt-4 text-2xl font-bold tracking-tight">Check your email</h1>
+              <h1 className="mt-4 font-display text-2xl font-semibold">Check your email</h1>
               <p className="mt-2 text-ink-600 dark:text-ink-400">{sent}</p>
               <Button variant="ghost" className="mt-6" onClick={() => setMode("signin")}>Back to sign in</Button>
             </div>
           ) : (
             <>
-              <h1 className="text-2xl font-bold tracking-tight">{titles[mode][0]}</h1>
+              <h1 className="font-display text-2xl font-semibold">{titles[mode][0]}</h1>
               <p className="mt-1.5 text-sm text-ink-500">{titles[mode][1]}</p>
               {!supabase && <div className="mt-6"><Alert tone="red">Sign-in isn't configured on this server (SUPABASE_URL / SUPABASE_ANON_KEY).</Alert></div>}
 

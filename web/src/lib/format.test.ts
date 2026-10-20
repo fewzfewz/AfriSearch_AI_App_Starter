@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPages, formatSize, initials, linkCitations, shortModelName, timeAgo } from "./format";
+import { formatPages, formatSize, formatTokens, formatUsd, initials, linkCitations, shortModelName, timeAgo } from "./format";
 import { splitLines } from "./ndjson";
 
 describe("linkCitations", () => {
@@ -31,5 +31,20 @@ describe("formatting", () => {
     expect(timeAgo("2026-10-19T11:59:30Z", now)).toBe("just now");
     expect(timeAgo("2026-10-19T09:00:00Z", now)).toBe("3 hours ago");
     expect(timeAgo("2026-10-18T12:00:00Z", now)).toBe("1 day ago");
+  });
+});
+
+describe("formatTokens and formatUsd", () => {
+  it("shortens token counts", () => {
+    expect(formatTokens(950)).toBe("950");
+    expect(formatTokens(1234)).toBe("1.2K");
+    expect(formatTokens(48_000)).toBe("48K");
+    expect(formatTokens(2_500_000)).toBe("2.5M");
+  });
+  it("shows dollars, keeping tiny amounts visible", () => {
+    expect(formatUsd(null)).toBe("–");
+    expect(formatUsd(0)).toBe("$0.00");
+    expect(formatUsd(12.5)).toBe("$12.50");
+    expect(formatUsd(0.0008)).toBe("$0.0008");
   });
 });

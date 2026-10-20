@@ -47,3 +47,17 @@ export function linkCitations(text: string): string {
 export function shortModelName(id: string | null | undefined): string {
   return (id ?? "").split("/").pop() ?? "";
 }
+
+/** 1234 -> "1.2K", 2500000 -> "2.5M". */
+export function formatTokens(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0).replace(/\.0$/, "")}K`;
+  return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** Dollars, with cents; small amounts keep enough digits to be non-zero. */
+export function formatUsd(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined) return "–";
+  if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4).replace(/0+$/, "")}`;
+  return `$${amount.toFixed(2)}`;
+}

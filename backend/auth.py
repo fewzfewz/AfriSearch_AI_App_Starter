@@ -8,7 +8,7 @@ from typing import Any
 import jwt
 from fastapi import Header, HTTPException
 
-from backend import config, db
+from backend import config, db, mailer
 
 
 @dataclass(frozen=True)
@@ -67,5 +67,6 @@ def current_user(authorization: str | None = Header(default=None)) -> User:
                     name=metadata.get("full_name") or metadata.get("name") or email.split("@")[0])
     else:
         raise HTTPException(status_code=500, detail=f"Unknown AFRISEARCH_AUTH mode '{config.AUTH_MODE}'.")
-    db.ensure_user(user.id, user.email, user.name)
+    if db.ensure_user(user.id, user.email, user.name) and config.AUTH_MODE == "supabase":
+        mailer.send(mailer.welcome(user.email, user.name))
     return user

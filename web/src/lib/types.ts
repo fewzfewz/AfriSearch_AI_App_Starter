@@ -9,6 +9,7 @@ export interface AppConfig {
   max_upload_mb: number;
   max_files_per_upload: number;
   file_types: string[];
+  email?: boolean; // the server sends invitation and notification emails
   sentry_dsn: string | null;
   environment: string;
   org_name: string | null;
@@ -209,4 +210,16 @@ export interface Insights {
   per_day: { day: string; questions: number }[];
   top_documents: { source_name: string; answers: number }[];
   feedback: FeedbackSummary;
+  usage: UsageSummary;
+}
+
+/** Hosted-model tokens and estimated cost this month. */
+export interface UsageSummary {
+  since: string;
+  answers: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null; // null when no model's price is known
+  unpriced_answers: number;
+  models: { provider: string; model: string; answers: number; input_tokens: number; output_tokens: number; cost_usd: number | null }[];
 }

@@ -154,8 +154,9 @@ AfriSearch verifies each request's access token with the project's published sig
   - **All documents**: tick documents to search only those.
   - **Options**: passages to use (1–8) and reranking.
 - **Answers:** click a citation such as **S1** to show its passage, **Open document at page N** to see the original, and the icons below the answer to copy it, download it as Markdown or rate it. The stop button cancels an answer that is being written.
-- **Chats** are saved in the sidebar (rename or delete with ⋯). **New chat** starts fresh.
-- **Insights** and **Settings** cover usage, ratings, members, appearance and system details.
+- **Chats** are saved in the sidebar, grouped by date (rename, share or delete with ⋯). **New chat** starts fresh.
+- **Search and commands:** press **Ctrl+K** (**⌘K** on a Mac), or the search button, to jump to a page, a chat or a document, or switch the theme.
+- **Insights** and **Settings** cover usage, AI cost, ratings, members, appearance and system details. The sidebar can be collapsed; the account menu at its bottom has the theme and sign-out.
 
 ## Answer models
 
@@ -173,8 +174,9 @@ AfriSearch verifies each request's access token with the project's published sig
 - **Which model is pre-selected:** `AFRISEARCH_DEFAULT_PROVIDER` (for example `qwen-small`). Otherwise the first available model in the table order is used.
 - **Claude refusals:** requests to Claude include Anthropic's server-side refusal fallback. If a safety filter declines a question, the API answers with Anthropic's recommended fallback model instead of returning an error.
 - **Privacy:** when you use Claude, ChatGPT or Gemini, the retrieved passages from your documents are sent to that company.
-- **Streaming:** local models (except gpt-oss, whose raw output needs cleaning first) show the answer as it is written; the first words of a Qwen 2.5 0.5B answer appear in about a second once the model is loaded. Claude, ChatGPT and Gemini answers appear all at once.
+- **Streaming:** Claude, ChatGPT, Gemini and local models (except gpt-oss, whose raw output needs cleaning first) show the answer as it is written; the first words of a Qwen 2.5 0.5B answer appear in about a second once the model is loaded.
 - **Cost:** about $0.01 per question with `claude-opus-5-5` and about half that with `gpt-6.1-sol` (at October 2026 prices). Local models are free.
+- **Tracking cost:** every cloud-model answer records the tokens it used; **Insights → AI usage** shows this month's answers, tokens and estimated cost per model. Only Claude Opus 5.5's price ($4 / $20 per million input / output tokens) is built in; add others with `AFRISEARCH_MODEL_PRICES`, for example `gpt-6.1-sol=2.5/10,gemini-4-argon=1.25/10` (USD per million tokens, from the provider's price list). Answers from models without a price count tokens but not cost.
 
 ### Local models
 
@@ -281,6 +283,13 @@ If your documents are full of codes the search model confuses, measure it on you
 | `SUPABASE_SERVICE_ROLE_KEY` | – | Secret; lets "Delete my account" remove the Supabase account too |
 | `SENTRY_DSN`, `SENTRY_DSN_WEB` | – | Error reports to Sentry from the API and the web app |
 | `AFRISEARCH_ENV` | `development` | Environment name in error reports |
+| `AFRISEARCH_APP_URL` | – | Public address of the web app, for links in emails |
+| `AFRISEARCH_EMAIL` | off | Email: `resend`, `smtp`, or `log` (print emails in the server log) |
+| `AFRISEARCH_EMAIL_FROM` | `AfriSearch <noreply@localhost>` | Sender of the emails |
+| `RESEND_API_KEY` | – | For `AFRISEARCH_EMAIL=resend` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | –, `587`, –, –, `1` | For `AFRISEARCH_EMAIL=smtp` (port 465 uses TLS directly) |
+| `AFRISEARCH_EMAIL_INDEXING_AFTER` | `60` | Email whoever started indexing when it took longer than this many seconds (0 = never) |
+| `AFRISEARCH_MODEL_PRICES` | – | Extra model prices for cost estimates, `model=input/output` in USD per million tokens |
 | `AFRISEARCH_BIND` | `127.0.0.1` | Docker only: address the container's port is published on |
 | `HF_HOME` | `~/.cache/hf_models` | Where model weights are stored |
 
@@ -339,9 +348,11 @@ cd web && npm run build && E2E_PYTHON=python npm run e2e   # browser tests (npx 
 | `tests/test_ocr.py` | Scanned and mixed PDFs, images, OCR languages, missing Tesseract |
 | `tests/test_providers.py` | Claude, ChatGPT and Gemini requests against a local mock server |
 | `tests/test_text_processing.py`, `tests/test_evaluation_scoring.py` | Chunking, citations, grading rules |
+| `tests/test_email.py` | Welcome, invitation and "documents ready" emails; Resend and SMTP; failures don't break requests |
+| `tests/test_usage.py` | Tokens and cost per answer, per workspace and model; unknown prices; refusals; account deletion |
 | `tests/test_formats.py` | Word, Excel, PowerPoint, HTML, Markdown and CSV extraction and search |
 | `web/src/lib/format.test.ts` | Citation links, stream parsing, formatting |
-| `web/e2e/` | In a real browser, against the API with fake models (`tests/e2e/server.py`): upload, ask, citations, ratings, passages-only search, dialog focus |
+| `web/e2e/` | In a real browser, against the API with fake models (`tests/e2e/server.py`): upload, ask, citations, ratings, passages-only search, dialog focus, command palette |
 
 GitHub Actions runs the backend tests, the web app checks and build, the browser tests and a Docker build on every push and pull request.
 

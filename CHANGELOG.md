@@ -26,8 +26,17 @@ Ready for a pilot: security, limits, backups, legal pages and account controls.
 - The search model and reranker load at startup (`AFRISEARCH_PRELOAD_MODELS=0` to turn off).
 - Keyboard focus stays inside open dialogs and returns afterwards.
 - Browser tests (Playwright, `web/e2e/`) run in CI against the real API with fake models.
+- Email (Resend or SMTP): invitations, a welcome message, and "your documents are ready" after long indexing jobs. Off by default; `log` prints emails in the server log.
+- AI cost tracking: tokens and estimated cost of every cloud-model answer, per workspace and model, in Insights. Claude Opus 5.5's price is built in; others via `AFRISEARCH_MODEL_PRICES`.
+- Redesigned web app:
+  - Command palette (Ctrl/⌘ K) for pages, chats, documents and actions.
+  - Collapsible sidebar with chats grouped by date, and an account menu.
+  - Greeting and suggestions on a new chat; step-by-step progress while answering; source preview cards.
+  - Page headers and stat tiles in Library, Insights and Settings; colour-coded file types.
+  - New display typeface for headings, and refreshed dark mode.
 
 ### Fixed
+- The upload error for an unsupported file listed only the old formats.
 - Ratings could be attached to another member's message in a shared workspace.
 - Two simultaneous first requests could create two default workspaces.
 

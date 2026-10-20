@@ -56,6 +56,10 @@ AFRISEARCH_ORG_NAME=Your Organisation Ltd
 AFRISEARCH_CONTACT_EMAIL=privacy@example.org
 ANTHROPIC_API_KEY=...              # or OPENAI_API_KEY / GEMINI_API_KEY
 AFRISEARCH_DEFAULT_PROVIDER=claude
+AFRISEARCH_APP_URL=https://search.example.org
+AFRISEARCH_EMAIL=resend             # or smtp; see "Email" below
+AFRISEARCH_EMAIL_FROM=AfriSearch <noreply@search.example.org>
+RESEND_API_KEY=...
 ```
 
 Keep `.env` private (`chmod 600 .env`). It holds secret keys.
@@ -101,6 +105,12 @@ docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml start afr
 
 Create a project for Python (FastAPI) and one for the browser (JavaScript) in Sentry, put their DSNs in `.env` as `SENTRY_DSN` and `SENTRY_DSN_WEB`, and restart. Reports never include documents, questions, IP addresses or cookies.
 
+## Email
+
+AfriSearch emails invitations, a welcome message on first sign-in, and "your documents are ready" when indexing took more than a minute. With [Resend](https://resend.com) (free for 3,000 emails a month): add and verify your domain there, create an API key, and set `AFRISEARCH_EMAIL=resend`, `RESEND_API_KEY` and an `AFRISEARCH_EMAIL_FROM` address on that domain. Any other provider works over SMTP (`AFRISEARCH_EMAIL=smtp` and the `SMTP_*` settings). Supabase sends the sign-up confirmation and password-reset emails itself; set its SMTP settings to the same provider so all emails come from your domain.
+
+Try it first with `AFRISEARCH_EMAIL=log`: emails are written to the server log instead of being sent.
+
 ## 10. Uptime monitoring
 
 Add a monitor for `https://search.example.org/api/health`. It returns **200** when the database answers and the data folder is writable, and **503** otherwise. Check every 5 minutes and alert by email or SMS.
@@ -118,4 +128,4 @@ Read `CHANGELOG.md` before updating; until 1.0, a version may need re-indexing (
 
 ## Limits and costs
 
-The defaults are set in `.env`: 500 MB of documents per workspace, 20 questions per minute and 500 per day per user, 200 uploaded files per hour per user. Raise or lower them to fit your plans and your AI bill. Limits are counted per server process; with one server that's exact.
+The defaults are set in `.env`: 500 MB of documents per workspace, 20 questions per minute and 500 per day per user, 200 uploaded files per hour per user. Raise or lower them to fit your plans and your AI bill. **Insights → AI usage** shows each workspace's cloud-model tokens and estimated cost this month. Limits are counted per server process; with one server that's exact.

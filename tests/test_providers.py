@@ -97,7 +97,13 @@ def test_claude_request_uses_effort_and_refusal_fallback(claude, monkeypatch):
         {"type": "thinking", "thinking": "", "signature": "sig"},
         {"type": "text", "text": "Monthly [S1]."},
     )
-    assert llm._claude_generate("Be accurate.", "Question?") == "Monthly [S1]."
+    usage = llm.Usage()
+    token = llm._usage.set(usage)
+    try:
+        assert llm._claude_generate("Be accurate.", "Question?") == "Monthly [S1]."
+    finally:
+        llm._usage.reset(token)
+    assert (usage.input_tokens, usage.output_tokens) == (10, 5)  # from the response's usage
 
     request = claude.last()
     assert request["headers"]["anthropic-beta"] == "server-side-fallback-2026-07-01"
@@ -139,7 +145,13 @@ def claude_stream(*texts, stop_reason="end_turn"):
 def test_claude_streams_with_the_same_request(claude, monkeypatch):
     monkeypatch.setattr(llm, "CLAUDE_MODEL", "claude-opus-5-5")
     claude.responses["/v1/messages"] = claude_stream("Clean them ", "every month ", "[S1].")
-    assert list(llm._claude_stream("Be accurate.", "Question?")) == ["Clean them ", "every month ", "[S1]."]
+    usage = llm.Usage()
+    token = llm._usage.set(usage)
+    try:
+        assert list(llm._claude_stream("Be accurate.", "Question?")) == ["Clean them ", "every month ", "[S1]."]
+    finally:
+        llm._usage.reset(token)
+    assert (usage.input_tokens, usage.output_tokens) == (10, 5)
     request = claude.last()
     assert request["body"]["stream"] is True
     assert request["body"]["fallbacks"] == "default"  # refusal fallback stays on when streaming

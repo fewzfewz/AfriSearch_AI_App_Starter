@@ -1,19 +1,84 @@
 // Usage and answer quality for the workspace.
-import { BarChart3, ThumbsDown, ThumbsUp } from "lucide-react";
+import {
+  BarChart3, Clock3, Coins, FileStack, HardDrive, MessagesSquare, ScanText, SearchX, TextQuote, ThumbsDown, ThumbsUp,
+} from "lucide-react";
 import { useState } from "react";
-import { FileIcon } from "../components/answer";
-import { Alert, Card, EmptyState, Spinner } from "../components/ui";
-import { formatSize, timeAgo } from "../lib/format";
+import { FileTile } from "../components/answer";
+import { Alert, Card, EmptyState, PageHeader, Spinner, Stat } from "../components/ui";
+import { formatSize, formatTokens, formatUsd, shortModelName, timeAgo } from "../lib/format";
 import { useApi } from "../lib/hooks";
-import type { Insights } from "../lib/types";
+import type { Insights, UsageSummary } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
 
-function Stat({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
+/** Share of helpful ratings as a ring. */
+function RatingRing({ up, total }: { up: number; total: number }) {
+  const share = total ? up / total : 0;
+  const radius = 34;
+  const length = 2 * Math.PI * radius;
   return (
-    <Card className="p-4">
-      <p className="text-sm text-ink-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
-      {hint && <p className="mt-0.5 text-xs text-ink-400">{hint}</p>}
+    <div className="relative h-24 w-24 shrink-0">
+      <svg viewBox="0 0 80 80" className="h-24 w-24 -rotate-90" aria-hidden="true">
+        <circle cx="40" cy="40" r={radius} fill="none" strokeWidth="8" className="stroke-ink-100 dark:stroke-ink-800" />
+        {total > 0 && (
+          <circle cx="40" cy="40" r={radius} fill="none" strokeWidth="8" strokeLinecap="round" className="stroke-emerald-500"
+            strokeDasharray={`${share * length} ${length}`} />
+        )}
+      </svg>
+      <span className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-xl font-semibold tabular-nums">{total ? `${Math.round(share * 100)}%` : "–"}</span>
+        <span className="text-[10px] uppercase tracking-wide text-ink-400">helpful</span>
+      </span>
+    </div>
+  );
+}
+
+function UsageCard({ usage }: { usage: UsageSummary }) {
+  const month = new Date(`${usage.since}T00:00:00`).toLocaleDateString(undefined, { month: "long" });
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <h2 className="flex items-center gap-2 font-semibold"><Coins className="h-4 w-4 text-amber-600" /> AI usage in {month}</h2>
+          <p className="mt-0.5 text-xs text-ink-500">Answers from cloud models (Claude, ChatGPT, Gemini). Local models are free.</p>
+        </div>
+        <div className="text-right">
+          <p className="text-[26px] font-semibold leading-none tabular-nums">{formatUsd(usage.cost_usd ?? (usage.answers ? null : 0))}</p>
+          <p className="mt-1 text-xs text-ink-400">estimated cost</p>
+        </div>
+      </div>
+      {usage.answers ? (
+        <>
+          <div className="mt-5 grid grid-cols-3 gap-3 text-sm">
+            {[["Answers", usage.answers.toLocaleString()], ["Tokens in", formatTokens(usage.input_tokens)], ["Tokens out", formatTokens(usage.output_tokens)]].map(([label, value]) => (
+              <div key={label} className="rounded-xl bg-ink-50 px-3 py-2.5 dark:bg-ink-800/50">
+                <p className="text-xs text-ink-500">{label}</p>
+                <p className="mt-0.5 font-semibold tabular-nums">{value}</p>
+              </div>
+            ))}
+          </div>
+          <table className="mt-4 w-full text-sm">
+            <thead className="text-left text-xs text-ink-400">
+              <tr><th className="pb-2 font-medium">Model</th><th className="pb-2 text-right font-medium">Answers</th><th className="pb-2 text-right font-medium">Tokens</th><th className="pb-2 text-right font-medium">Cost</th></tr>
+            </thead>
+            <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
+              {usage.models.map((m) => (
+                <tr key={`${m.provider}-${m.model}`}>
+                  <td className="py-2"><span className="font-medium">{shortModelName(m.model)}</span> <span className="text-xs text-ink-400">{m.provider}</span></td>
+                  <td className="py-2 text-right tabular-nums">{m.answers}</td>
+                  <td className="py-2 text-right tabular-nums text-ink-500">{formatTokens(m.input_tokens + m.output_tokens)}</td>
+                  <td className="py-2 text-right tabular-nums">{formatUsd(m.cost_usd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {usage.unpriced_answers > 0 && (
+            <p className="mt-3 text-xs text-ink-400">
+              {usage.unpriced_answers} answer{usage.unpriced_answers === 1 ? "" : "s"} from models without a configured price aren't in the total
+              (set <code className="text-[11px]">AFRISEARCH_MODEL_PRICES</code>).
+            </p>
+          )}
+        </>
+      ) : <p className="mt-5 rounded-xl bg-ink-50 px-4 py-6 text-center text-sm text-ink-500 dark:bg-ink-800/40">No cloud-model answers this month.</p>}
     </Card>
   );
 }
@@ -43,7 +108,7 @@ function QuestionsChart({ days }: { days: Insights["per_day"] }) {
                 onMouseLeave={() => setHover(null)}
               >
                 <div
-                  className="w-full max-w-[28px] rounded-t-[4px] bg-brand-600 transition-opacity"
+                  className="w-full max-w-[28px] rounded-t-md bg-gradient-to-t from-brand-600 to-amber-400 transition-opacity"
                   style={{ height: `${(day.questions / max) * 100}%`, minHeight: day.questions ? 2 : 0, opacity: hover === null || hover === i ? 1 : 0.55 }}
                 />
                 {hover === i && (
@@ -76,18 +141,19 @@ export function InsightsPage() {
   if (loading && !data) return <div className="flex justify-center py-24"><Spinner /></div>;
   if (error) return <div className="mx-auto max-w-5xl p-6"><Alert tone="red">{error}</Alert></div>;
   if (!data) return null;
-  const helpful = data.feedback.total ? `${Math.round((data.feedback.up / data.feedback.total) * 100)}%` : "–";
   const maxCited = Math.max(1, ...data.top_documents.map((d) => d.answers));
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
-      <h1 className="text-2xl font-bold tracking-tight">Insights</h1>
-      <p className="mt-1 text-sm text-ink-500">How {current?.name} is being used, and how good the answers are.</p>
+      <PageHeader icon={<BarChart3 className="h-5 w-5" />} title="Insights"
+        description={<>How <span className="font-medium text-ink-700 dark:text-ink-300">{current?.name}</span> is being used, and how good the answers are.</>} />
 
       <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Questions answered" value={data.questions} hint={`in ${data.chats} chat${data.chats === 1 ? "" : "s"} · ${data.people} ${data.people === 1 ? "person" : "people"}`} />
-        <Stat label="Rated helpful" value={helpful} hint={`${data.feedback.total} rating${data.feedback.total === 1 ? "" : "s"}`} />
-        <Stat label="Not covered by documents" value={data.not_covered} hint="questions with no good match" />
-        <Stat label="Average answer time" value={data.average_seconds !== null ? `${data.average_seconds}s` : "–"} />
+        <Stat label="Questions" value={data.questions} icon={<MessagesSquare className="h-4 w-4" />}
+          hint={`in ${data.chats} chat${data.chats === 1 ? "" : "s"} · ${data.people} ${data.people === 1 ? "person" : "people"}`} />
+        <Stat label="Not covered" value={data.not_covered} icon={<SearchX className="h-4 w-4" />} tone="amber" hint="no good match in documents" />
+        <Stat label="Answer time" value={data.average_seconds !== null ? `${data.average_seconds}s` : "–"} icon={<Clock3 className="h-4 w-4" />} tone="blue" hint="on average" />
+        <Stat label="AI cost this month" value={formatUsd(data.usage.cost_usd ?? (data.usage.answers ? null : 0))} icon={<Coins className="h-4 w-4" />} tone="green"
+          hint={`${formatTokens(data.usage.input_tokens + data.usage.output_tokens)} tokens`} />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-5">
@@ -105,13 +171,13 @@ export function InsightsPage() {
             <ul className="space-y-3">
               {data.top_documents.map((doc) => (
                 <li key={doc.source_name}>
-                  <div className="flex items-center gap-2 text-sm">
-                    <FileIcon name={doc.source_name} />
+                  <div className="flex items-center gap-2.5 text-sm">
+                    <FileTile name={doc.source_name} size="sm" />
                     <span className="min-w-0 flex-1 truncate">{doc.source_name}</span>
                     <span className="tabular-nums text-ink-500">{doc.answers}</span>
                   </div>
                   <div className="mt-1.5 h-1.5 rounded-full bg-ink-100 dark:bg-ink-800">
-                    <div className="h-full rounded-full bg-brand-600" style={{ width: `${(doc.answers / maxCited) * 100}%` }} />
+                    <div className="h-full rounded-full bg-gradient-to-r from-brand-600 to-amber-400" style={{ width: `${(doc.answers / maxCited) * 100}%` }} />
                   </div>
                 </li>
               ))}
@@ -120,11 +186,26 @@ export function InsightsPage() {
         </Card>
       </div>
 
+      <div className="mt-4 grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-3"><UsageCard usage={data.usage} /></div>
+        <Card className="flex flex-col p-5 lg:col-span-2">
+          <h2 className="font-semibold">Answer ratings</h2>
+          <p className="text-xs text-ink-500">From 👍 and 👎 in chats</p>
+          <div className="mt-4 flex flex-1 items-center gap-5">
+            <RatingRing up={data.feedback.up} total={data.feedback.total} />
+            <ul className="space-y-2 text-sm">
+              <li className="flex items-center gap-2"><ThumbsUp className="h-4 w-4 text-emerald-600" /><span className="tabular-nums font-medium">{data.feedback.up}</span> helpful</li>
+              <li className="flex items-center gap-2"><ThumbsDown className="h-4 w-4 text-red-600" /><span className="tabular-nums font-medium">{data.feedback.down}</span> not helpful</li>
+            </ul>
+          </div>
+        </Card>
+      </div>
+
       <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Documents" value={data.documents} />
-        <Stat label="Passages" value={data.passages} />
-        <Stat label="Read with OCR" value={data.ocr_documents} />
-        <Stat label="Storage" value={formatSize(data.bytes) || "0 KB"} />
+        <Stat label="Documents" value={data.documents} icon={<FileStack className="h-4 w-4" />} />
+        <Stat label="Passages" value={data.passages.toLocaleString()} icon={<TextQuote className="h-4 w-4" />} tone="violet" />
+        <Stat label="Read with OCR" value={data.ocr_documents} icon={<ScanText className="h-4 w-4" />} tone="blue" />
+        <Stat label="Storage" value={formatSize(data.bytes) || "0 KB"} icon={<HardDrive className="h-4 w-4" />} tone="amber" />
       </div>
 
       <Card className="mt-4">

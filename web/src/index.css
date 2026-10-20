@@ -9,6 +9,72 @@
   :focus-visible {
     outline-color: theme("colors.brand.500");
   }
+  ::selection {
+    background: theme("colors.brand.200");
+    color: theme("colors.brand.950");
+  }
+  .dark ::selection {
+    background: theme("colors.brand.800");
+    color: white;
+  }
+  /* Quiet scrollbars that don't fight the content. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.ink.300") transparent;
+  }
+  .dark * {
+    scrollbar-color: theme("colors.ink.700") transparent;
+  }
+}
+
+@layer components {
+  /* Page titles and greetings. */
+  .font-display {
+    font-optical-sizing: auto;
+    letter-spacing: -0.02em;
+  }
+  /* A warm glow behind hero areas. */
+  .bg-glow {
+    background:
+      radial-gradient(60% 50% at 50% 0%, rgb(251 146 60 / 0.16), transparent 70%),
+      radial-gradient(40% 40% at 85% 10%, rgb(234 179 8 / 0.08), transparent 70%);
+  }
+  .dark .bg-glow {
+    background:
+      radial-gradient(60% 50% at 50% 0%, rgb(194 65 12 / 0.22), transparent 70%),
+      radial-gradient(40% 40% at 85% 10%, rgb(202 138 4 / 0.08), transparent 70%);
+  }
+  /* A faint dot grid, masked to fade out. */
+  .bg-dots {
+    background-image: radial-gradient(theme("colors.ink.300") 1px, transparent 1px);
+    background-size: 22px 22px;
+    mask-image: radial-gradient(70% 60% at 50% 0%, black, transparent);
+  }
+  .dark .bg-dots {
+    background-image: radial-gradient(theme("colors.ink.800") 1px, transparent 1px);
+  }
+  /* Placeholder lines while an answer is on its way. */
+  .skeleton {
+    background: linear-gradient(90deg, theme("colors.ink.100") 25%, theme("colors.ink.200") 50%, theme("colors.ink.100") 75%);
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-md;
+  }
+  .dark .skeleton {
+    background: linear-gradient(90deg, theme("colors.ink.800") 25%, theme("colors.ink.700") 50%, theme("colors.ink.800") 75%);
+    background-size: 200% 100%;
+  }
+  /* The brand gradient, for primary actions and the logo mark. */
+  .bg-brand-gradient {
+    background-image: linear-gradient(135deg, theme("colors.brand.500"), theme("colors.brand.700") 55%, theme("colors.red.700"));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Answer text rendered from markdown. */
@@ -16,6 +82,7 @@
 .prose-answer ul { list-style: disc; padding-left: 1.4em; }
 .prose-answer ol { list-style: decimal; padding-left: 1.4em; }
 .prose-answer li + li { margin-top: 0.25em; }
+.prose-answer li::marker { color: theme("colors.brand.600"); }
 .prose-answer strong { font-weight: 600; }
 .prose-answer h1, .prose-answer h2, .prose-answer h3 { font-weight: 600; font-size: 1.05em; }
 .prose-answer code { font-size: 0.9em; background: theme("colors.ink.100"); padding: 0.1em 0.3em; border-radius: 0.25rem; }

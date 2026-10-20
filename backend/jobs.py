@@ -6,7 +6,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from backend import db, store
+from backend import config, db, mailer, store
 
 logger = logging.getLogger("afrisearch.jobs")
 
@@ -22,7 +22,7 @@ def start_index_job(workspace_id: str, user_id: str, full: bool = False) -> dict
     if active:
         return active[0]
     job = db.create_job(workspace_id, user_id)
-    _futures[job["id"]] = _executor.submit(_run, job["id"], workspace_id, full)
+    _futures[job["id"]] = _executor.submit(_run, job["id"], workspace_id, user_id, full)
     return job
 
 
@@ -33,8 +33,19 @@ def wait(job_id: str, timeout: float | None = None) -> None:
         future.result(timeout=timeout)
 
 
-def _run(job_id: str, workspace_id: str, full: bool) -> None:
+def notify(workspace_id: str, user_id: str, result: dict[str, Any], seconds: float) -> None:
+    """Email whoever started a long indexing job that it finished: they've probably moved on."""
+    if not config.EMAIL_INDEXING_AFTER_SECONDS or seconds < config.EMAIL_INDEXING_AFTER_SECONDS:
+        return
+    user, workspace = db.get_user(user_id), db.get_workspace(workspace_id, user_id)
+    if user and user["email"] and workspace:
+        mailer.send(mailer.indexing_done(user["email"], workspace["name"], len(result.get("new_documents", [])),
+                                         len(result.get("failed", []))))
+
+
+def _run(job_id: str, workspace_id: str, user_id: str, full: bool) -> None:
     db.update_job(job_id, status="running")
+    started = time.monotonic()
     last_write = 0.0
 
     def progress(update: dict[str, Any]) -> None:
@@ -53,5 +64,6 @@ def _run(job_id: str, workspace_id: str, full: bool) -> None:
         db.update_job(job_id, status="failed", error=f"Indexing failed: {exc}")
     else:
         db.update_job(job_id, status="done", result=result, progress={"stage": "done"})
+        notify(workspace_id, user_id, result, time.monotonic() - started)
     finally:
         _futures.pop(job_id, None)

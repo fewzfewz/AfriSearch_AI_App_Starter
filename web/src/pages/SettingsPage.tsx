@@ -1,34 +1,54 @@
 // Workspace, team, appearance and account settings.
-import { Download, LogOut, Monitor, Moon, Sun, Trash2, UserPlus } from "lucide-react";
+import {
+  AlertTriangle, Building2, Download, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Badge, Button, Card, ConfirmDialog, cx, useToast } from "../components/ui";
+import { Badge, Button, Card, ConfirmDialog, PageHeader, cx, useToast } from "../components/ui";
 import { api, downloadFile } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
 import { useTheme } from "../lib/theme";
 import type { DocumentsResponse, Member } from "../lib/types";
+import { useWorkspace } from "../lib/workspace";
 
 interface Team {
   members: Member[];
   invitations: { email: string; created_at: string }[];
 }
-import { useWorkspace } from "../lib/workspace";
 
-function Section({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+const SECTIONS = [
+  { id: "workspace", title: "Workspace", icon: Building2 },
+  { id: "members", title: "Members", icon: Users },
+  { id: "appearance", title: "Appearance", icon: Palette },
+  { id: "account", title: "Account", icon: UserRound },
+  { id: "about", title: "About", icon: Info },
+  { id: "danger", title: "Danger zone", icon: AlertTriangle },
+] as const;
+
+function Section({ id, description, children, danger }: { id: (typeof SECTIONS)[number]["id"]; description?: string; children: ReactNode; danger?: boolean }) {
+  const { title, icon: Icon } = SECTIONS.find((s) => s.id === id)!;
   return (
-    <section className="grid gap-4 border-t border-ink-200 py-8 first:border-t-0 first:pt-0 dark:border-ink-800 md:grid-cols-3">
-      <div>
-        <h2 className="font-semibold">{title}</h2>
-        {description && <p className="mt-1 text-sm text-ink-500">{description}</p>}
-      </div>
-      <div className="md:col-span-2">{children}</div>
+    <section id={id} className="scroll-mt-6">
+      <Card className={cx("p-5 sm:p-6", danger && "border-red-200 dark:border-red-900/70")}>
+        <div className="mb-5 flex items-start gap-3">
+          <span className={cx("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+            danger ? "bg-red-50 text-red-600 dark:bg-red-950/60 dark:text-red-400" : "bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-400")}>
+            <Icon className="h-4 w-4" />
+          </span>
+          <div>
+            <h2 className="font-semibold">{title}</h2>
+            {description && <p className="mt-0.5 text-sm text-ink-500 dark:text-ink-400">{description}</p>}
+          </div>
+        </div>
+        {children}
+      </Card>
     </section>
   );
 }
 
-const inputClass = "w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-900";
+const inputClass = "w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-900";
 
 export function SettingsPage() {
   const { current, workspaces, user, reload, switchTo } = useWorkspace();
@@ -108,10 +128,22 @@ export function SettingsPage() {
 
   if (!current) return null;
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
-      <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-      <div className="mt-8">
-        <Section title="Workspace" description="A workspace holds documents and chats. Create one per team, project or client.">
+    <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
+      <PageHeader icon={<Settings className="h-5 w-5" />} title="Settings" description="Your workspace, team, appearance and account." />
+      <div className="mt-8 lg:grid lg:grid-cols-[180px_1fr] lg:gap-8">
+        <nav aria-label="Settings sections" className="hidden lg:block">
+          <ul className="sticky top-6 space-y-0.5 text-sm">
+            {SECTIONS.filter((s) => s.id !== "danger" || isOwner).map(({ id, title, icon: Icon }) => (
+              <li key={id}>
+                <a href={`#${id}`} className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-ink-600 transition hover:bg-ink-100 hover:text-ink-900 dark:text-ink-400 dark:hover:bg-ink-800 dark:hover:text-white">
+                  <Icon className="h-4 w-4" /> {title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="space-y-5">
+        <Section id="workspace" description="A workspace holds documents and chats. Create one per team, project or client.">
           <label htmlFor="ws-name" className="text-sm font-medium">Name</label>
           <div className="mt-1.5 flex gap-2">
             <input id="ws-name" value={name} maxLength={80} disabled={!isOwner} onChange={(e) => setName(e.target.value)} className={inputClass} />
@@ -120,8 +152,8 @@ export function SettingsPage() {
           {!isOwner && <p className="mt-2 text-xs text-ink-500">Only the owner can rename this workspace.</p>}
         </Section>
 
-        <Section title="Members" description={multiUser ? "People who can search and ask in this workspace." : "Sign-in is off on this server, so there is one local user. Turn on Supabase sign-in to share workspaces."}>
-          <Card className="divide-y divide-ink-100 dark:divide-ink-800">
+        <Section id="members" description={multiUser ? "People who can search and ask in this workspace." : "Sign-in is off on this server, so there is one local user. Turn on Supabase sign-in to share workspaces."}>
+          <div className="divide-y divide-ink-100 overflow-hidden rounded-xl border border-ink-200/80 dark:divide-ink-800 dark:border-ink-800">
             {(members.data?.members ?? []).map((member) => (
               <div key={member.id} className="flex items-center gap-3 px-4 py-3">
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-100 text-xs font-semibold dark:bg-ink-800">{initials(member.name, member.email)}</span>
@@ -153,7 +185,7 @@ export function SettingsPage() {
                 )}
               </div>
             ))}
-          </Card>
+          </div>
           {multiUser && isOwner && (
             <div className="mt-3 flex gap-2">
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="colleague@example.org" aria-label="Email to add"
@@ -163,32 +195,34 @@ export function SettingsPage() {
           )}
           {multiUser && isOwner && (
             <p className="mt-2 text-xs text-ink-500">
-              People without an account are invited: they join automatically when they sign up with that email. Send them the link to this site.
+              {config?.email
+                ? "People without an account get an invitation email, and join automatically when they sign up with that address."
+                : "People without an account are invited: they join automatically when they sign up with that email. Send them the link to this site."}
             </p>
           )}
         </Section>
 
-        <Section title="Appearance">
+        <Section id="appearance" description="Light, dark, or follow your device.">
           <div className="grid grid-cols-3 gap-2">
             {([["light", Sun, "Light"], ["dark", Moon, "Dark"], ["system", Monitor, "System"]] as const).map(([value, Icon, label]) => (
               <button key={value} type="button" onClick={() => setTheme(value)} aria-pressed={theme === value}
                 className={cx("flex flex-col items-center gap-2 rounded-xl border p-4 text-sm transition",
-                  theme === value ? "border-brand-500 bg-brand-50 font-medium text-brand-900 dark:bg-brand-950 dark:text-brand-100" : "border-ink-200 hover:border-ink-300 dark:border-ink-800 dark:hover:border-ink-700")}>
+                  theme === value ? "border-brand-400 bg-brand-50 font-medium text-brand-900 ring-4 ring-brand-500/10 dark:border-brand-700 dark:bg-brand-950/60 dark:text-brand-100" : "border-ink-200 hover:border-ink-300 dark:border-ink-800 dark:hover:border-ink-700")}>
                 <Icon className="h-5 w-5" /> {label}
               </button>
             ))}
           </div>
         </Section>
 
-        <Section title="Account">
-          <Card className="flex items-center gap-3 p-4">
+        <Section id="account" description="Your sign-in, and your data.">
+          <div className="flex items-center gap-3 rounded-xl bg-ink-50 p-4 dark:bg-ink-800/40">
             <span className="flex h-10 w-10 items-center justify-center rounded-full bg-ink-800 text-sm font-semibold text-white dark:bg-ink-200 dark:text-ink-900">{initials(user?.name ?? "", user?.email)}</span>
             <div className="min-w-0 flex-1">
               <p className="truncate font-medium">{user?.name}</p>
               <p className="truncate text-sm text-ink-500">{user?.email || "Local mode: no account needed on this computer"}</p>
             </div>
             {multiUser && <Button icon={<LogOut className="h-4 w-4" />} onClick={async () => { await signOut(); navigate("/"); }}>Sign out</Button>}
-          </Card>
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button icon={<Download className="h-4 w-4" />} loading={exporting} onClick={exportData}>Download my data</Button>
             <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950"
@@ -201,7 +235,7 @@ export function SettingsPage() {
           </p>
         </Section>
 
-        <Section title="About" description="What this server uses to read and search your documents.">
+        <Section id="about" description="What this server uses to read and search your documents.">
           <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
             <div><dt className="text-ink-500">Version</dt><dd className="font-medium">{config?.version}</dd></div>
             <div><dt className="text-ink-500">Sign-in</dt><dd className="font-medium">{multiUser ? "Supabase accounts" : "Off (local mode)"}</dd></div>
@@ -219,8 +253,8 @@ export function SettingsPage() {
         </Section>
 
         {isOwner && (
-          <Section title="Danger zone">
-            <Card className="flex flex-wrap items-center gap-4 border-red-200 p-4 dark:border-red-900">
+          <Section id="danger" danger>
+            <div className="flex flex-wrap items-center gap-4">
               <div className="min-w-0 flex-1">
                 <p className="font-medium">Delete this workspace</p>
                 <p className="text-sm text-ink-500">Deletes its documents, chats and feedback for everyone. This can't be undone.</p>
@@ -229,9 +263,10 @@ export function SettingsPage() {
                 title={workspaces.length < 2 ? "You can't delete your only workspace" : undefined} onClick={() => setDeleteOpen(true)}>
                 Delete workspace
               </Button>
-            </Card>
+            </div>
           </Section>
         )}
+        </div>
       </div>
 
       <ConfirmDialog

@@ -38,7 +38,6 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 # Only for Supabase projects that still sign tokens with the legacy shared
 # secret (HS256); newer projects publish signing keys, which need no secret here.
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
-# Extra sign-in buttons shown by the web app, e.g. "google"; enable them in Supabase too.
 # Shown on the privacy notice and terms pages.
 ORG_NAME = os.getenv("AFRISEARCH_ORG_NAME", "")
 CONTACT_EMAIL = os.getenv("AFRISEARCH_CONTACT_EMAIL", "")
@@ -47,4 +46,21 @@ SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 SENTRY_DSN_WEB = os.getenv("SENTRY_DSN_WEB", "")
 ENVIRONMENT = os.getenv("AFRISEARCH_ENV", "development")
 
+# Where users reach the web app, for links in emails, e.g. https://afrisearch.example.org
+APP_URL = os.getenv("AFRISEARCH_APP_URL", "").rstrip("/")
+
+# Email (backend/mailer.py): "" (off), "log", "resend" or "smtp".
+EMAIL_BACKEND = os.getenv("AFRISEARCH_EMAIL", "").strip().lower()
+EMAIL_FROM = os.getenv("AFRISEARCH_EMAIL_FROM", "AfriSearch <noreply@localhost>")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_API_URL = os.getenv("RESEND_API_URL", "https://api.resend.com").rstrip("/")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "1") != "0"
+# Email the person who started indexing when it took longer than this (seconds); 0 turns it off.
+EMAIL_INDEXING_AFTER_SECONDS = float(os.getenv("AFRISEARCH_EMAIL_INDEXING_AFTER", "60"))
+
+# Extra sign-in buttons shown by the web app, e.g. "google"; enable them in Supabase too.
 AUTH_PROVIDERS = [p.strip() for p in os.getenv("AFRISEARCH_AUTH_PROVIDERS", "").split(",") if p.strip()]

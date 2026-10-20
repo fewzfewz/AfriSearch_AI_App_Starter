@@ -90,7 +90,7 @@ export function Composer({
   };
 
   return (
-    <div className="rounded-2xl border border-ink-200 bg-white shadow-lg shadow-ink-900/5 focus-within:border-brand-400 focus-within:ring-4 focus-within:ring-brand-500/10 dark:border-ink-700 dark:bg-ink-900">
+    <div className="rounded-[22px] border border-ink-200/90 bg-white shadow-lift transition focus-within:border-brand-300 focus-within:shadow-[0_0_0_4px_rgb(249_115_22/0.10),0_12px_32px_-8px_rgb(28_25_23/0.16)] dark:border-ink-700 dark:bg-ink-900 dark:focus-within:border-brand-800 dark:focus-within:shadow-[0_0_0_4px_rgb(194_65_12/0.18)]">
       <textarea
         ref={textarea}
         rows={1}
@@ -104,7 +104,7 @@ export function Composer({
         }}
         placeholder={answering ? "Ask about your documents, in any language…" : "Search your documents…"}
         aria-label="Your question"
-        className="block w-full resize-none bg-transparent px-4 pb-2 pt-4 text-[15px] leading-6 placeholder:text-ink-400 focus:outline-none"
+        className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-[15px] leading-6 placeholder:text-ink-400 focus:outline-none"
       />
       <div className="flex items-center gap-1 px-2 pb-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
@@ -280,7 +280,7 @@ export function Composer({
             disabled={!canSend}
             aria-label="Send"
             title="Send (Enter)"
-            className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-700 text-white transition hover:bg-brand-800 disabled:bg-ink-200 disabled:text-ink-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-600"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-gradient text-white shadow-glow transition hover:brightness-110 disabled:bg-none disabled:bg-ink-100 disabled:text-ink-400 disabled:shadow-none dark:disabled:bg-ink-800 dark:disabled:text-ink-600"
           >
             <ArrowUp className="h-4 w-4" />
           </button>

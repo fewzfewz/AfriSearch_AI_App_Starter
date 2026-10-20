@@ -1,8 +1,13 @@
 // The workspace's documents: upload, indexing progress, and the document list.
-import { AlertCircle, Camera, CheckCircle2, ExternalLink, FilePlus2, FileUp, Loader2, MoreHorizontal, RefreshCw, ScanText, Search, Trash2, Upload } from "lucide-react";
+import {
+  AlertCircle, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, HardDrive, Loader2, MoreHorizontal,
+  RefreshCw, ScanText, Search, TextQuote, Trash2, Upload,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileIcon } from "../components/answer";
-import { Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Popover, Spinner, cx, useToast } from "../components/ui";
+import { FileTile } from "../components/answer";
+import {
+  Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, PageHeader, Popover, Spinner, Stat, cx, useToast,
+} from "../components/ui";
 import { api, authHeaders, openDocument, uploadFiles } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatPages, formatSize, timeAgo } from "../lib/format";
@@ -16,9 +21,9 @@ function ProgressBar({ value }: { value: number | null }) {
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800" role="progressbar" aria-valuenow={value === null ? undefined : Math.round(value * 100)} aria-valuemin={0} aria-valuemax={100}>
       {value === null ? (
-        <div className="h-full w-1/3 animate-pulse rounded-full bg-brand-600" />
+        <div className="h-full w-1/3 animate-pulse rounded-full bg-brand-gradient" />
       ) : (
-        <div className="h-full rounded-full bg-brand-600 transition-all duration-500" style={{ width: `${Math.max(3, value * 100)}%` }} />
+        <div className="h-full rounded-full bg-brand-gradient transition-all duration-500" style={{ width: `${Math.max(3, value * 100)}%` }} />
       )}
     </div>
   );
@@ -46,7 +51,13 @@ function jobLabel(job: Job): string {
   return "Starting…";
 }
 
-function DropZone({ onFiles, accept, maxMb, disabled }: { onFiles: (files: File[]) => void; accept: string[]; maxMb: number; disabled: boolean }) {
+function DropZone({ onFiles, accept, maxMb, disabled, compact }: {
+  onFiles: (files: File[]) => void;
+  accept: string[];
+  maxMb: number;
+  disabled: boolean;
+  compact?: boolean; // a slim bar once there are documents
+}) {
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   return (
@@ -64,19 +75,23 @@ function DropZone({ onFiles, accept, maxMb, disabled }: { onFiles: (files: File[
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && input.current?.click()}
       aria-label="Upload documents"
       className={cx(
-        "flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition",
-        over ? "border-brand-500 bg-brand-50 dark:bg-brand-950/40" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50 dark:border-ink-700 dark:hover:border-brand-800 dark:hover:bg-ink-900",
+        "group flex cursor-pointer items-center rounded-2xl border-2 border-dashed transition",
+        compact ? "flex-col gap-3 px-5 py-4 text-center sm:flex-row sm:text-left" : "flex-col justify-center px-6 py-12 text-center",
+        over ? "scale-[1.01] border-brand-500 bg-brand-50 dark:bg-brand-950/40" : "border-ink-200 bg-ink-50/40 hover:border-brand-300 hover:bg-brand-50/40 dark:border-ink-700 dark:bg-ink-900/30 dark:hover:border-brand-800 dark:hover:bg-brand-950/20",
         disabled && "pointer-events-none opacity-60",
       )}
     >
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-100 text-brand-700 dark:bg-brand-900 dark:text-brand-300">
-        <FileUp className="h-6 w-6" />
+      <div className={cx("flex shrink-0 items-center justify-center bg-brand-gradient text-white shadow-glow transition group-hover:-translate-y-0.5",
+        compact ? "h-10 w-10 rounded-xl" : "h-14 w-14 rounded-2xl")}>
+        <FileUp className={compact ? "h-5 w-5" : "h-6 w-6"} />
       </div>
-      <p className="mt-4 font-semibold">Drop files here, or <span className="text-brand-700 dark:text-brand-400">browse</span></p>
-      <p className="mt-1 text-sm text-ink-500">PDF, Word, Excel, PowerPoint, text, or photos and scans of pages · up to {maxMb} MB each</p>
+      <div className={compact ? "min-w-0 flex-1" : ""}>
+        <p className={cx("font-semibold", !compact && "mt-4")}>Drop files here, or <span className="text-brand-700 dark:text-brand-400">browse</span></p>
+        <p className="mt-0.5 text-sm text-ink-500">PDF, Word, Excel, PowerPoint, text, or photos and scans of pages · up to {maxMb} MB each</p>
+      </div>
       {/* On phones, open the camera straight away: photos of pages are read with OCR. */}
       <label onClick={(e) => e.stopPropagation()}
-        className="mt-4 inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg bg-white px-3 text-sm font-medium text-ink-700 shadow-sm ring-1 ring-ink-200 hover:bg-ink-50 dark:bg-ink-900 dark:text-ink-200 dark:ring-ink-700 sm:hidden">
+        className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg bg-white px-3 text-sm font-medium text-ink-700 shadow-sm ring-1 ring-ink-200 hover:bg-ink-50 dark:bg-ink-900 dark:text-ink-200 dark:ring-ink-700 sm:hidden">
         <Camera className="h-4 w-4" /> Take a photo
         <input type="file" accept="image/*" capture="environment" hidden disabled={disabled}
           onChange={(e) => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
@@ -223,7 +238,7 @@ export function LibraryPage() {
     const ok = files.filter((f) => !tooBig.includes(f) && !wrongType.includes(f));
     const clientErrors = [
       ...tooBig.map((f) => ({ filename: f.name, error: `Larger than ${config.max_upload_mb} MB.` })),
-      ...wrongType.map((f) => ({ filename: f.name, error: "Only PDF, TXT and images (PNG, JPG, TIFF, WebP, BMP) are supported." })),
+      ...wrongType.map((f) => ({ filename: f.name, error: `This file type isn't supported. Use ${config.file_types.map((t) => t.toUpperCase()).join(", ")}.` })),
     ];
     setRejected(clientErrors);
     setFailed([]);
@@ -255,30 +270,27 @@ export function LibraryPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Library</h1>
-          <p className="mt-1 text-sm text-ink-500">Documents in {current?.name}. Everyone in this workspace can search them.</p>
-        </div>
-        {data && (
-          <div className="flex gap-6 text-sm">
-            <div><span className="block text-xl font-semibold tabular-nums">{data.documents.length}</span><span className="text-ink-500">documents</span></div>
-            <div><span className="block text-xl font-semibold tabular-nums">{data.indexed_chunks}</span><span className="text-ink-500">passages</span></div>
-          </div>
-        )}
-      </div>
-      {data?.storage.quota_bytes && (
-        <div className="mt-4 max-w-md">
-          <div className="flex justify-between text-xs text-ink-500">
-            <span>Storage</span>
-            <span className="tabular-nums">{formatSize(data.storage.used_bytes) || "0 KB"} of {formatSize(data.storage.quota_bytes)}</span>
-          </div>
-          <div className="mt-1"><ProgressBar value={data.storage.used_bytes / data.storage.quota_bytes} /></div>
+      <PageHeader icon={<FolderOpen className="h-5 w-5" />} title="Library"
+        description={<>Documents in <span className="font-medium text-ink-700 dark:text-ink-300">{current?.name}</span>. Everyone in this workspace can search them.</>} />
+      {data && data.documents.length > 0 && (
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          <Stat label="Documents" value={data.documents.length} icon={<FileStack className="h-4 w-4" />}
+            hint={`${data.documents.filter((d) => d.ocr).length} read with OCR`} />
+          <Stat label="Passages" value={data.indexed_chunks.toLocaleString()} icon={<TextQuote className="h-4 w-4" />} tone="violet"
+            hint="Searchable pieces of text" />
+          <Stat label="Storage" value={formatSize(data.storage.used_bytes) || "0 KB"} icon={<HardDrive className="h-4 w-4" />} tone="blue"
+            hint={data.storage.quota_bytes ? (
+              <span className="block">
+                <span className="mb-1.5 block"><ProgressBar value={data.storage.used_bytes / data.storage.quota_bytes} /></span>
+                of {formatSize(data.storage.quota_bytes)}
+              </span>
+            ) : "No limit"} />
         </div>
       )}
 
       <div className="mt-6 space-y-4">
-        <DropZone onFiles={onFiles} accept={config?.file_types ?? []} maxMb={config?.max_upload_mb ?? 15} disabled={Boolean(upload) || Boolean(active)} />
+        <DropZone onFiles={onFiles} accept={config?.file_types ?? []} maxMb={config?.max_upload_mb ?? 15}
+          disabled={Boolean(upload) || Boolean(active)} compact={Boolean(data?.documents.length)} />
         {data && !data.ocr.available && (
           <p className="text-xs text-ink-500">
             <ScanText className="mr-1 inline h-3.5 w-3.5" />
@@ -360,7 +372,7 @@ export function LibraryPage() {
               <div className="relative flex-1 sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name" aria-label="Filter documents by name"
-                  className="w-full rounded-lg border border-ink-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-800 dark:bg-ink-900" />
+                  className="w-full rounded-xl border border-ink-200 bg-white py-2 pl-9 pr-3 text-sm shadow-soft focus:border-brand-400 focus:outline-none focus:ring-4 focus:ring-brand-500/10 dark:border-ink-800 dark:bg-ink-900 dark:shadow-none" />
               </div>
               <span className="text-sm text-ink-500">{shown.length} of {data.documents.length}</span>
               {selected.length > 0 && (
@@ -398,7 +410,7 @@ export function LibraryPage() {
                       </td>
                       <td className="px-4 py-3">
                         <button type="button" onClick={() => setViewing(doc)} className="flex min-w-0 items-center gap-2.5 text-left">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 dark:bg-ink-800"><FileIcon name={doc.source_name} /></span>
+                          <FileTile name={doc.source_name} />
                           <span className="min-w-0">
                             <span className="block truncate font-medium hover:text-brand-700 dark:hover:text-brand-400">{doc.source_name}</span>
                             <span className="flex flex-wrap items-center gap-1.5 text-xs text-ink-500">

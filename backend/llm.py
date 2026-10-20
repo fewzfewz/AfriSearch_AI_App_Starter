@@ -7,9 +7,13 @@ can also stream the answer piece by piece as it is generated.
 
 SDKs are imported lazily so a missing package or API key only disables that
 provider instead of breaking the app.
+
+Hosted providers report the tokens each answer used into a `Usage` passed to
+`generate` or `stream`; `cost_usd` turns them into an estimated price.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
@@ -26,6 +30,48 @@ LOCAL_MAX_NEW_TOKENS = int(os.getenv("AFRISEARCH_LOCAL_MAX_NEW_TOKENS", "512"))
 
 class ProviderError(RuntimeError):
     """Generation failed in a way the user should see (refusal, empty output, ...)."""
+
+
+@dataclass
+class Usage:
+    """Tokens one answer used, as the provider reported them."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+# The Usage of the answer being generated; provider functions add to it.
+_usage: contextvars.ContextVar[Usage | None] = contextvars.ContextVar("usage", default=None)
+
+
+def _record(input_tokens: int | None, output_tokens: int | None) -> None:
+    usage = _usage.get()
+    if usage is not None:
+        usage.input_tokens += input_tokens or 0
+        usage.output_tokens += output_tokens or 0
+
+
+def _prices() -> dict[str, tuple[float, float]]:
+    """USD per million input and output tokens, by model id.
+
+    Only list prices we're sure of; add others with AFRISEARCH_MODEL_PRICES,
+    e.g. "gpt-6.1-sol=2.5/10,gemini-4-argon=1.25/10".
+    """
+    prices = {"claude-opus-5-5": (4.0, 20.0)}
+    for item in os.getenv("AFRISEARCH_MODEL_PRICES", "").split(","):
+        model, _, pair = item.strip().partition("=")
+        try:
+            prices[model] = tuple(float(x) for x in pair.split("/"))  # type: ignore[assignment]
+        except ValueError:
+            continue
+    return prices
+
+
+def cost_usd(model: str, usage: Usage) -> float | None:
+    """Estimated price of an answer; None when the model's price isn't known."""
+    price = _prices().get(model)
+    if not price or len(price) != 2:
+        return None
+    return round((usage.input_tokens * price[0] + usage.output_tokens * price[1]) / 1_000_000, 6)
 
 
 @dataclass
@@ -118,6 +164,7 @@ def _claude_generate(system: str, prompt: str) -> str:
 
     client = _client("claude", anthropic.Anthropic)
     response = client.beta.messages.create(**_claude_request(system, prompt))
+    _record(response.usage.input_tokens, response.usage.output_tokens)
 
     if response.stop_reason == "refusal":
         raise ProviderError("Claude declined to answer this question.")
@@ -138,6 +185,7 @@ def _claude_stream(system: str, prompt: str) -> Iterator[str]:
             produced = produced or bool(text.strip())
             yield text
         final = stream.get_final_message()
+    _record(final.usage.input_tokens, final.usage.output_tokens)
     if final.stop_reason == "refusal":
         # Declined even after any fallback; text streamed so far is partial and must be discarded.
         raise ProviderError("Claude declined to answer this question.")
@@ -164,6 +212,8 @@ def _openai_generate(system: str, prompt: str) -> str:
         input=prompt,
         max_output_tokens=API_MAX_TOKENS,
     )
+    if response.usage:
+        _record(response.usage.input_tokens, response.usage.output_tokens)
     text = (response.output_text or "").strip()
     if not text:
         raise ProviderError(f"ChatGPT returned no text (status: {response.status}).")
@@ -182,6 +232,8 @@ def _openai_stream(system: str, prompt: str) -> Iterator[str]:
         if event.type == "response.output_text.delta":
             produced = produced or bool(event.delta.strip())
             yield event.delta
+        elif event.type == "response.completed" and getattr(event.response, "usage", None):
+            _record(event.response.usage.input_tokens, event.response.usage.output_tokens)
         elif event.type in ("response.failed", "response.incomplete", "error"):
             raise ProviderError(f"ChatGPT stopped before finishing ({event.type.split('.')[-1]}).")
     if not produced:
@@ -205,11 +257,18 @@ def _gemini_config(system: str) -> Any:
     return types.GenerateContentConfig(system_instruction=system, max_output_tokens=API_MAX_TOKENS)
 
 
+def _gemini_record(response: Any) -> None:
+    meta = getattr(response, "usage_metadata", None)
+    if meta:  # thinking tokens are billed as output
+        _record(meta.prompt_token_count, (meta.candidates_token_count or 0) + (meta.thoughts_token_count or 0))
+
+
 def _gemini_generate(system: str, prompt: str) -> str:
     from google import genai
 
     client = _client("gemini", genai.Client)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system))
+    _gemini_record(response)
     text = (response.text or "").strip()
     if not text:
         raise ProviderError("Gemini returned no text (the response may have been blocked).")
@@ -221,10 +280,14 @@ def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
 
     client = _client("gemini", genai.Client)
     produced = False
+    last = None
     for chunk in client.models.generate_content_stream(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system)):
+        last = chunk
         if chunk.text:
             produced = produced or bool(chunk.text.strip())
             yield chunk.text
+    if last is not None:
+        _gemini_record(last)  # the last chunk carries the totals
     if not produced:
         raise ProviderError("Gemini returned no text (the response may have been blocked).")
 
@@ -496,14 +559,33 @@ def _usable(provider_id: str) -> Provider:
     return provider
 
 
-def generate(provider_id: str, system: str, prompt: str) -> str:
-    return _usable(provider_id).generate(system, prompt)
+def generate(provider_id: str, system: str, prompt: str, usage: Usage | None = None) -> str:
+    provider = _usable(provider_id)
+    token = _usage.set(usage)
+    try:
+        return provider.generate(system, prompt)
+    finally:
+        _usage.reset(token)
 
 
-def stream(provider_id: str, system: str, prompt: str) -> Iterator[str]:
+def stream(provider_id: str, system: str, prompt: str, usage: Usage | None = None) -> Iterator[str]:
     """Yield the answer in pieces; providers that can't stream yield it whole."""
     provider = _usable(provider_id)
     if provider.stream is None:
-        yield provider.generate(system, prompt)
-    else:
-        yield from provider.stream(system, prompt)
+        yield generate(provider_id, system, prompt, usage)
+        return
+    pieces = provider.stream(system, prompt)
+    try:
+        while True:
+            # Each step may run on a different thread (the server iterates the stream in a
+            # thread pool), so the usage collector is set around each step, not once.
+            token = _usage.set(usage)
+            try:
+                piece = next(pieces)
+            except StopIteration:
+                return
+            finally:
+                _usage.reset(token)
+            yield piece
+    finally:
+        pieces.close()  # if the client went away, stop generating now (frees a local GPU)

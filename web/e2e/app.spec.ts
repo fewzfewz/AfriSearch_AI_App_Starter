@@ -5,7 +5,7 @@ const GUIDE = "Solar Panel Maintenance Guide. Solar panels should be cleaned eve
 
 async function uploadGuide(page: Page, name = "solar-guide.txt") {
   await page.goto("/app/library");
-  await page.locator("input[type=file]").first().setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(GUIDE) });
+  await page.locator("input[type=file][multiple]").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${GUIDE} (${name})`) });
   await expect(page.getByText(name, { exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
@@ -58,4 +58,21 @@ test("dialogs keep keyboard focus inside", async ({ page }) => {
   expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+});
+
+test("the command palette finds pages, chats and documents", async ({ page }) => {
+  await uploadGuide(page, "palette-guide.txt");
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Search and commands" });
+  await expect(palette).toBeVisible();
+  await page.keyboard.type("insights");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/app\/insights/);
+  await expect(palette).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Search and commands" }).first().click();
+  await page.keyboard.type("palette-guide");
+  await expect(page.getByRole("option", { name: /palette-guide\.txt/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(palette).toHaveCount(0);
 });
