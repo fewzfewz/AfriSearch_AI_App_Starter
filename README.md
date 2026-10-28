@@ -14,15 +14,15 @@ docker compose up --build        # or: docker-compose up --build
 
 Then open http://127.0.0.1:8000. The first start downloads about 1 GB of models. Without further setup it runs in **local mode**: no sign-in, one user, only reachable from this computer. To offer it to other people, turn on sign-in first ([Accounts and workspaces](#accounts-and-workspaces)).
 
-> **Status:** v0.2. Accounts, workspaces and the web app are in place for a hosted pilot; HTTPS, backups and billing are still to do. See [ROADMAP.md](ROADMAP.md) and [SECURITY.md](SECURITY.md).
+> **Status:** v0.2. Accounts, workspaces, document management, automated backups, and the React web app are in place for a hosted pilot. See [ROADMAP.md](ROADMAP.md) and [SECURITY.md](SECURITY.md) for current milestones and next steps.
 
 ## Features
 
 **Documents**
 - Upload PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML, Markdown, CSV, TXT and photos or scans of pages (PNG, JPG, TIFF, WebP, BMP) by drag and drop, or with the camera on a phone; exact duplicates are rejected
-- Upload a new version of a document, or select several and delete them
+- Upload a new version of a document, or select several and delete them in bulk
 - OCR for scanned PDFs and photos with Tesseract (English, Amharic and Swahili by default), page by page, so mixed PDFs work
-- Indexing runs in the background with live progress (file, page, stage); you can keep working meanwhile
+- Indexing runs in the background with live progress (file, page, stage); you can keep working meanwhile, with optional email notification upon completion
 - Library with type, pages, passages, OCR status, size and date; read a document's passages, open the original, delete
 
 **Asking**
@@ -32,12 +32,15 @@ Then open http://127.0.0.1:8000. The first start downloads about 1 GB of models.
 - Questions the documents don't cover are answered with "not covered" and the closest passages, instead of a guess
 - Answers from **Claude, ChatGPT, Gemini** or a **local model**; or **find passages only**, with nothing sent to an AI model
 - Limit a question to chosen documents; copy, rate (👍/👎 with a comment) or download any answer as Markdown
+- Quick command palette (**Ctrl+K** / **⌘K**) to jump between chats, documents, and settings
 
 **Teams and product**
-- Sign-in with Supabase (email and password, Google, password reset, email confirmation)
-- Workspaces: separate documents, chats and feedback per team or project; owners add members by email
-- Insights: questions per day, most-cited documents, answers not covered, ratings and comments
-- Landing page, light and dark mode, phone-friendly layout
+- Sign-in with Supabase (email and password, Google, password reset, email confirmation) or run in local single-user mode
+- Workspaces: separate documents, chats and feedback per team or project; owners add members or invite pending users by email
+- Email delivery via Resend or SMTP for invitations, welcomes, and long indexing notifications
+- Insights & Telemetry: questions per day, most-cited documents, answers not covered, ratings, comments, and per-workspace AI token and cost tracking
+- Production-ready tooling: automated snapshot backup & restore (`python -m backend.backup`), Caddy reverse proxy config, Sentry error tracking, and legal notice pages (/privacy, /terms)
+- Modern UI: landing page, light and dark mode, and phone-friendly layout
 
 ## Architecture
 
@@ -416,6 +419,30 @@ python evaluation/run_eval.py --corpus my_docs/ --questions my_questions.json --
 - With a cloud model, the passages needed for an answer are sent to that provider; use a local model for sensitive documents.
 - Data is stored in SQLite and files on one server. That suits a pilot; many concurrent users need PostgreSQL and object storage (see the roadmap).
 - Usage limits (questions, uploads, storage) are counted per server process. There is no billing yet.
+
+## What's Next & Planned Additions
+
+AfriSearch is designed to become the premier document intelligence solution for African organisations, cooperatives, healthcare providers, and researchers. The following high-impact additions are prioritized on the active development track:
+
+### 1. Document Understanding & Search Enhancements
+- **Layout & Table-Aware Chunking:** Preserve tables from Excel sheets, CSVs, and PDF balance sheets with Markdown-formatted context, avoiding fragmented chunks.
+- **Instant Document Summaries:** Automatic 3-bullet executive briefs and topic tags generated when documents finish indexing.
+- **Expanded Gold Benchmark for African Languages:** Expanding `evaluation/` with multi-document corpora in Somali, Afaan Oromo, Tigrinya, Hausa, Yoruba, and Igbo.
+
+### 2. Mobile & Voice Accessibility
+- **Voice Input & Text-to-Speech (TTS):** Ask questions with speech in Amharic, Swahili, and English (using Whisper / SeamlessM4T) and listen to spoken answers—vital for mobile and low-literacy users.
+- **WhatsApp & Telegram Bot Integration:** Query a workspace knowledge base directly via messaging apps, where African field teams and communities already collaborate.
+- **UI Localization (i18n):** Native interface translations for Amharic (አማርኛ), Swahili (Kiswahili), French, and Arabic.
+
+### 3. Collaboration & Workspace Management
+- **Folders and Tagging:** Organize growing libraries into structured collections (e.g. Legal, Finance, Operations, Medical).
+- **Suggested Follow-Up Prompts:** Dynamic follow-up chips displayed below generated answers to guide deeper exploration.
+- **Role-Based Access Control (RBAC):** Admin, Member, and Viewer permissions within workspaces.
+
+### 4. SaaS Scale & Pan-African Payments
+- **African Payment Gateways:** Integration with Chapa (Ethiopia), M-Pesa / Paystack / Flutterwave (Kenya, Nigeria, Pan-Africa) alongside Stripe.
+- **Enterprise Vector Store:** Migration option from local NumPy arrays to PostgreSQL + `pgvector` or Qdrant for multi-worker distributed clusters.
+- **Offline Desktop Bundle:** Electron or Tauri offline package for rural health clinics and schools with intermittent internet.
 
 ## Project
 

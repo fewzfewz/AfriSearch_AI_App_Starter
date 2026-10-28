@@ -34,7 +34,9 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 ## 🟠 P1 — for the pilot (2–5 organisations)
 
 ### Answers and search
-- [ ] **More evaluation questions** in Somali, Afaan Oromo and Hausa (M): there's only one each, which is too few to judge. Ask pilot users for real questions and documents.
+- [ ] **More evaluation questions** in Somali, Afaan Oromo and Hausa (M): there's only one each, which is too few to judge. Ask pilot users for real questions and documents; add Tigrinya, Yoruba and Igbo test corpora.
+- [ ] **Layout and table-aware chunking** (M): parse tables in Excel (.xlsx), CSV, and PDF balance sheets as Markdown tables with headers preserved in each chunk, preventing broken context across rows. *(backend/text.py, backend/extract.py)*
+- [ ] **Suggested follow-up questions** under answers (S): generate 2–3 contextual suggestion chips below completed answers to prompt deeper exploration.
 - [x] **Check the reranker on Amharic**: it helps. Right document first for 5/6 Amharic questions with it, 4/6 without (English 25/25 vs 22/25). Kept on for all scripts.
 - [ ] **Watch the reranker on Swahili** (S): 4/5 with it vs 5/5 without (`sw-money-stolen`). One question is too few to act on; recheck with more Swahili questions.
 - [ ] **Tune the "not covered" threshold** (S) from real feedback: −4 stopped more off-topic questions on the test set but sits closer to real answers. *(`AFRISEARCH_MIN_RERANK_SCORE`)*
@@ -48,12 +50,15 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [x] **Send the invitation by email** (Resend or SMTP).
 - [x] **Share a chat** with the rest of the workspace (read-only).
 - [ ] **Rename chats automatically** from the first answer, instead of the truncated question (S).
+- [ ] **Role-based access control (RBAC)** (M): Admin, Member and Viewer roles in workspaces to control upload, delete and member invite permissions. *(backend/db.py, backend/auth.py)*
+- [ ] **Confidential / restricted documents** (M): allow workspace owners to mark specific sensitive documents as private to designated members.
 
 ### Library
 - [x] **Word, Excel, PowerPoint, HTML, Markdown and CSV** documents. Old binary formats (.doc, .xls, .ppt) are rejected with a hint to re-save.
 - [x] **Replace a document with a new version**; old chats keep their quoted passages.
 - [x] **Bulk delete**.
-- [ ] **Folders or tags** (M).
+- [ ] **Folders or tags** (M): organize documents into structured collections (e.g. Legal, Financial, Guidelines) with filtering in the Library and Ask search scope.
+- [ ] **Short summary of each document** after upload (M): automatically generate a 3-bullet executive summary and topic tags when indexing finishes.
 - [x] **Email when a long indexing job finishes**.
 - [x] **Upload from the phone camera** ("Take a photo" on phones).
 
@@ -71,7 +76,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 ### Billing and plans
 - [ ] **Decide pricing** with pilot users (S): what they value, and what each workspace costs to run (AI tokens, storage, CPU).
 - [ ] **Plans and limits in the database** (M): documents, storage and questions per month per plan; enforce them in the API and show them in Settings.
-- [ ] **Payments** (L): Stripe for cards; Chapa, Paystack or Flutterwave for local payment methods (Telebirr, M-Pesa…). Trials, invoices, and handling of webhooks.
+- [ ] **Payments** (L): Stripe for cards; Chapa (Ethiopia: Telebirr, CBE Birr), M-Pesa (Kenya: Safaricom), Paystack and Flutterwave for pan-African mobile money and card payments. Trials, invoices, and webhook reconciliation.
 - [x] **Track cloud-model cost per workspace**: tokens and estimated cost per answer, shown in Insights.
 - [ ] **Confirm ChatGPT and Gemini prices** (S): only Claude's is built in; set `AFRISEARCH_MODEL_PRICES` from their price lists.
 - [ ] **Pricing section** on the landing page, once prices are decided (S).
@@ -93,12 +98,11 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 
 ## 🟢 P3 — ideas for later
 
-- [ ] **Interface in Amharic and Swahili** (M): add i18n to the web app, with translations reviewed by native speakers (not machine translation).
-- [ ] **WhatsApp or Telegram bot** for asking questions from a phone (L).
-- [ ] **Short summary of each document** after upload (M).
-- [ ] **Suggested follow-up questions** under answers (S).
+- [ ] **Interface in Amharic and Swahili** (M): add i18n to the web app, with translations reviewed by native speakers (not machine translation); expand to French and Arabic for pan-African reach.
+- [ ] **Voice queries and text-to-speech (TTS)** (L): ask questions by voice in Amharic, Swahili or English (via Whisper / SeamlessM4T) and hear answers read aloud on mobile—vital for field workers and lower digital literacy users. *(web, backend)*
+- [ ] **WhatsApp or Telegram bot** for asking questions from a phone (L): webhook connector so field teams, farmers and clinic workers can query a workspace knowledge base and forward documents directly from chat apps.
 - [ ] **Public API keys** so organisations can connect their own tools (M).
-- [ ] **Offline desktop package** for places with poor internet (L).
+- [ ] **Offline desktop package** for places with poor internet (L): cross-platform Tauri/Electron desktop bundle with embedded quantized models for rural health clinics, schools and field offices.
 
 ---
 

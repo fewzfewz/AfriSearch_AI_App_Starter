@@ -51,14 +51,15 @@ AfriSearch is heading towards a hosted product (SaaS) for organisations that wor
 - [ ] **PostgreSQL with pgvector** instead of SQLite and per-workspace NumPy files, and object storage (S3-compatible) for uploads, so several API servers can share the load
 - [ ] **A job queue** (for example Redis + workers) instead of the in-process indexing thread
 - [ ] **Admin dashboard**: workspaces, usage, errors, support
-- [ ] **Transactional email**: welcome, invitations, usage warnings
-- [ ] **Data export and account deletion** for users (also a legal requirement in many countries)
+- [x] **Transactional email**: welcome, invitations (Resend/SMTP); usage warnings remain
+- [x] **Data export and account deletion** for users (zip export and account wipe in Settings)
 - [ ] Security review / penetration test before opening public sign-up
 
 ## Later ideas
 
-- Word, Excel and PowerPoint documents
-- Streaming answers for Claude, ChatGPT and Gemini
-- An interface in Amharic and Swahili (needs reviewed translations, not machine translation)
-- WhatsApp or Telegram bot for asking questions from a phone
-- Uploading straight from the phone camera
+- Voice queries and text-to-speech (TTS) in Amharic, Swahili and English
+- WhatsApp or Telegram bot for asking questions and forwarding documents from a phone
+- Layout and table-aware chunking for Excel, CSV and financial balance sheets
+- Interface translations in Amharic (አማርኛ), Swahili (Kiswahili), French and Arabic
+- Offline desktop package (Tauri / Electron) with quantized models for places with poor internet
+- Pan-African payment integrations (Chapa, M-Pesa, Paystack, Flutterwave) alongside Stripe
