@@ -633,14 +633,35 @@ def account_usage(workspace: Workspace, provider: str | None, usage: llm.Usage) 
     return {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost_usd": cost}
 
 
+def maybe_rename_chat(chat: dict[str, Any], question: str, answer: str | None) -> str | None:
+    """If this is the first assistant turn in the chat, auto-rename with a clean title."""
+    try:
+        chat_id = chat["id"]
+        messages = db.list_messages(chat_id)
+        # Exactly 1 user message (or fewer) exists before this assistant message is saved
+        if len(messages) <= 1:
+            current_title = chat.get("title", "")
+            if current_title in ("New chat", question[:120], question.strip()):
+                title = answers.generate_chat_title(question, answer)
+                if title:
+                    db.rename_chat(chat_id, title)
+                    return title
+    except Exception:
+        logger.exception("Failed to auto-rename chat %s", chat.get("id"))
+    return None
+
+
 def save_turn(prepared: PreparedAsk, summary: dict[str, Any], answer: str | None, removed: list[str],
-              error: str | None, seconds: float, usage: dict[str, Any] | None = None) -> str | None:
-    """Store the answer in the chat; returns the assistant message id."""
+              error: str | None, seconds: float, usage: dict[str, Any] | None = None,
+              suggestions: list[str] | None = None) -> tuple[str | None, str | None]:
+    """Store the answer in the chat; returns (assistant_message_id, new_chat_title)."""
     if not prepared.chat:
-        return None
+        return None, None
+    new_title = maybe_rename_chat(prepared.chat, summary["question"], answer)
     data = {key: summary[key] for key in ("provider", "model", "reranked", "covered", "sources")}
-    data.update(removed_citations=removed, error=error, seconds=round(seconds, 1), usage=usage)
-    return db.add_message(prepared.chat["id"], "assistant", answer or "", data)["id"]
+    data.update(removed_citations=removed, error=error, seconds=round(seconds, 1), usage=usage, suggestions=suggestions or [])
+    message_id = db.add_message(prepared.chat["id"], "assistant", answer or "", data)["id"]
+    return message_id, new_title
 
 
 @api.post("/ask")
@@ -665,8 +686,16 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
             raise HTTPException(status_code=502, detail=f"{prepared.provider} failed: {exc}") from exc
         answer, removed = clean_citations(answer, len(prepared.sources))
     used = account_usage(workspace, prepared.provider, usage)
-    message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used)
-    return {**summary, "answer": answer, "removed_citations": removed, "message_id": message_id}
+    suggestions = answers.generate_suggestions(request.question, prepared.sources, answer, prepared.covered)
+    message_id, new_title = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used, suggestions)
+    return {
+        **summary,
+        "answer": answer,
+        "removed_citations": removed,
+        "message_id": message_id,
+        "suggestions": suggestions,
+        "chat_title": new_title or (prepared.chat["title"] if prepared.chat else None),
+    }
 
 
 @api.post("/ask/stream")
@@ -689,8 +718,9 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
     def events():
         yield event("sources", **summary)
         if not prepared.provider:
-            message_id = save_turn(prepared, summary, None, [], None, time.monotonic() - started)
-            yield event("done", answer=None, removed_citations=[], message_id=message_id)
+            suggestions = answers.generate_suggestions(request.question, prepared.sources, None, prepared.covered)
+            message_id, new_title = save_turn(prepared, summary, None, [], None, time.monotonic() - started, suggestions=suggestions)
+            yield event("done", answer=None, removed_citations=[], message_id=message_id, suggestions=suggestions, chat_title=new_title)
             return
         pieces: list[str] = []
         usage = llm.Usage()
@@ -719,8 +749,9 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
             return
         answer, removed = clean_citations("".join(pieces), len(prepared.sources))
         used = account_usage(workspace, prepared.provider, usage)
-        message_id = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used)
-        yield event("done", answer=answer, removed_citations=removed, message_id=message_id)
+        suggestions = answers.generate_suggestions(request.question, prepared.sources, answer, prepared.covered)
+        message_id, new_title = save_turn(prepared, summary, answer, removed, None, time.monotonic() - started, used, suggestions)
+        yield event("done", answer=answer, removed_citations=removed, message_id=message_id, suggestions=suggestions, chat_title=new_title)
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
 

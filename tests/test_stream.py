@@ -48,6 +48,9 @@ def test_streams_sources_then_pieces_then_cleaned_answer(indexed, streaming_mode
     assert result[0]["provider"] == "fake"
     assert "".join(e["text"] for e in result[1:4]) == "".join(pieces)
     assert result[-1]["answer"] == "Clean the panels every month [S1]."
+    assert "suggestions" in result[-1]
+    assert isinstance(result[-1]["suggestions"], list)
+    assert len(result[-1]["suggestions"]) > 0
     assert result[-1]["removed_citations"] == ["S9"]
     assert "SOURCE PASSAGES" in calls[0]
 

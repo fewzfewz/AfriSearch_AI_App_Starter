@@ -7,6 +7,8 @@ All notable changes to AfriSearch are listed here. The project uses [semantic ve
 Ready for a pilot: security, limits, backups, legal pages and account controls.
 
 ### Added
+- Auto-rename chats: chats are automatically given clean, concise titles derived from the first answer and question, replacing raw truncated questions while preserving manually titled chats.
+- Contextual suggested follow-up questions: 2–3 interactive question chips below completed answers, generated in the question's language (English, Amharic, Swahili), clicking one sends it directly into the chat.
 - Per-user rate limits for questions and uploads, and a storage quota per workspace (`AFRISEARCH_*` settings).
 - Upload checks by content; uploads stop being read at 15 MB; at most 20 files per request (the web app sends batches).
 - Security headers: Content-Security-Policy, nosniff, no framing.

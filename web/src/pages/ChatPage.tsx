@@ -1,7 +1,7 @@
 // Asking questions: a chat with streamed, cited answers.
 import {
   AlertTriangle, ArrowRight, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, ListChecks, Quote, RotateCcw,
-  ThumbsDown, ThumbsUp, Upload,
+  Sparkles, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -67,11 +67,12 @@ function Progress({ searching }: { searching: boolean }) {
   );
 }
 
-function AssistantMessage({ message, providers, onRate, onRetry, busy }: {
+function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: {
   message: UiMessage;
   providers: Provider[];
   onRate: (message: UiMessage, rating: "up" | "down", comment: string) => Promise<void>;
   onRetry: (question: string, providerId: string) => void;
+  onAsk: (question: string) => void;
   busy: boolean;
 }) {
   const toast = useToast();
@@ -157,6 +158,29 @@ function AssistantMessage({ message, providers, onRate, onRetry, busy }: {
                 <SourceCard source={source} highlight={source.label === active} />
               </div>
             ))}
+          </div>
+        )}
+
+        {!message.streaming && message.data.suggestions && message.data.suggestions.length > 0 && (
+          <div className="space-y-1.5 pt-1 animate-fade-in">
+            <p className="flex items-center gap-1.5 text-xs font-medium text-ink-400 dark:text-ink-500">
+              <Sparkles className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400" />
+              Suggested follow-ups
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {message.data.suggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => onAsk(suggestion)}
+                  disabled={busy}
+                  className="group inline-flex items-center gap-1.5 rounded-xl border border-ink-200/90 bg-white/90 px-3 py-1.5 text-left text-xs font-medium text-ink-700 shadow-soft transition hover:-translate-y-0.5 hover:border-brand-300 hover:bg-brand-50/60 hover:text-brand-900 dark:border-ink-800 dark:bg-ink-900/80 dark:text-ink-300 dark:shadow-none dark:hover:border-brand-700 dark:hover:bg-brand-950/40 dark:hover:text-brand-200"
+                >
+                  <span>{suggestion}</span>
+                  <ArrowRight className="h-3 w-3 shrink-0 text-ink-400 transition group-hover:translate-x-0.5 group-hover:text-brand-600 dark:text-ink-500 dark:group-hover:text-brand-400" />
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -391,7 +415,16 @@ export function ChatPage() {
           update(id, (m) => ({ ...m, content: m.content + event.text }));
         } else if (event.type === "done") {
           const final = event.message_id ?? id;
-          update(id, (m) => ({ ...m, id: final, content: event.answer ?? "", data: { ...m.data, removed_citations: event.removed_citations } }));
+          update(id, (m) => ({
+            ...m,
+            id: final,
+            content: event.answer ?? "",
+            data: {
+              ...m.data,
+              removed_citations: event.removed_citations,
+              suggestions: event.suggestions,
+            },
+          }));
           id = final;
         } else if (event.type === "error") {
           // A refusal mid-answer: the text so far isn't an answer, so don't leave it on screen.
@@ -461,7 +494,7 @@ export function ChatPage() {
                   </div>
                 ) : (
                   <AssistantMessage key={message.id} message={message} providers={providers.data?.providers ?? []} onRate={rate}
-                    onRetry={(question, providerId) => ask(question, providerId)} busy={busy} />
+                    onRetry={(question, providerId) => ask(question, providerId)} onAsk={ask} busy={busy} />
                 ),
               )}
               <div ref={bottom} />

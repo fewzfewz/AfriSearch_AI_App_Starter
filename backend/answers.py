@@ -137,3 +137,214 @@ def source_payload(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for i, item in enumerate(sources, start=1)
     ]
+
+
+GENERIC_HEADINGS = {
+    "guide", "overview", "introduction", "sample", "example", "note", "table",
+    "page", "sheet", "part", "chapter", "section", "background", "summary",
+    "conclusion", "general", "about", "tips", "details", "info",
+}
+
+
+def clean_doc_title(name: str) -> str:
+    base = name.split("/")[-1]
+    base = re.sub(r"^[0-9a-f]{32}_", "", base)
+    base = re.sub(r"\.[^.]+$", "", base)
+    return base.replace("_", " ").replace("-", " ").strip()
+
+
+def generate_suggestions(
+    question: str,
+    sources: list[dict[str, Any]],
+    answer: str | None = None,
+    covered: bool = True,
+) -> list[str]:
+    """Generate 2-3 relevant follow-up questions in the question's language."""
+    lang = question_language(question)
+
+    if not sources:
+        if lang == "am":
+            return [
+                "በሰነዶቹ ውስጥ ምን ዋና ርዕሶች አሉ?",
+                "የተጫኑትን ሰነዶች ጠቅለል አድርግልኝ።",
+                "ሰነዶቼ ምን ምን መመሪያዎችን ይዘዋል?",
+            ]
+        if lang == "sw":
+            return [
+                "Je, nyaraka zangu zinahusu mada gani?",
+                "Fanya muhtasari wa nyaraka zilizopo.",
+                "Ni miongozo gani inayopatikana?",
+            ]
+        return [
+            "What topics are covered in my documents?",
+            "Summarize the available documents.",
+            "What key guidelines are available?",
+        ]
+
+    doc_names = list(dict.fromkeys(s.get("source_name", "") for s in sources if s.get("source_name")))
+    clean_docs = [clean_doc_title(d) for d in doc_names if d]
+
+    if not covered:
+        top_doc = clean_docs[0] if clean_docs else "the documents"
+        if lang == "am":
+            return [
+                f"{top_doc} ስለ ምን ይናገራል?",
+                f"በ{top_doc} ውስጥ ምን ዋና ነጥቦች አሉ?",
+                "ስለ ምን ዓይነት ርዕሶች መጠየቅ እችላለሁ?",
+            ]
+        if lang == "sw":
+            return [
+                f"{top_doc} inahusu nini?",
+                f"Ni mambo gani muhimu katika {top_doc}?",
+                "Naweza kuuliza kuhusu mada gani?",
+            ]
+        return [
+            f"What does {top_doc} cover?",
+            f"What are the key points in {top_doc}?",
+            "What topics can I ask about?",
+        ]
+
+    if lang == "am":
+        q_tokens = set(re.findall(r"[ሀ-፿]+", question))
+    else:
+        q_tokens = set(re.findall(r"[a-z0-9]+", question.lower()))
+
+    topics: list[str] = []
+    seen: set[str] = set()
+
+    for s in sources:
+        text = s.get("text", "")
+        if lang == "am":
+            found = re.findall(r"(?:^|\n)([ሀ-፿\s]{2,20})(?:።|፡)\s*", text)
+        else:
+            found = re.findall(r"(?:^|\n)([A-Z][A-Za-z0-9 /&-]{2,30})[.:]\s", text)
+            found.extend(re.findall(r"\*\*([A-Za-z0-9 /&-]{2,30})\*\*", text))
+
+        for cand in found:
+            cand = cand.strip()
+            cand_key = cand.lower()
+            if not cand or cand_key in GENERIC_HEADINGS or cand_key in seen:
+                continue
+            cand_tokens = set(re.findall(r"[ሀ-፿]+" if lang == "am" else r"[a-z0-9]+", cand_key))
+            if cand_tokens and cand_tokens.issubset(q_tokens):
+                continue
+            seen.add(cand_key)
+            topics.append(cand)
+            if len(topics) >= 4:
+                break
+        if len(topics) >= 4:
+            break
+
+    suggestions: list[str] = []
+
+    if lang == "am":
+        for t in topics[:2]:
+            suggestions.append(f"ስለ {t} ምን ይመክራል?")
+        if len(clean_docs) > 1 and len(suggestions) < 3:
+            suggestions.append(f"በ{clean_docs[1]} ውስጥ ስለዚህ ጉዳይ ምን ተብሏል?")
+        fallbacks = [
+            "ተያያዥ ጥንቃቄዎች ወይም ማስጠንቀቂያዎች ምንድን ናቸው?",
+            "ዋና ዋና መመሪያዎች እና ሂደቶች ምንድን ናቸው?",
+            "ስለ አፈጻጸሙ ተጨማሪ ማብራሪያ አለ?",
+        ]
+        for fb in fallbacks:
+            if len(suggestions) >= 3:
+                break
+            if fb not in suggestions:
+                suggestions.append(fb)
+    elif lang == "sw":
+        for t in topics[:2]:
+            suggestions.append(f"Kuhusu {t.lower()}, kuna mapendekezo gani?")
+        if len(clean_docs) > 1 and len(suggestions) < 3:
+            suggestions.append(f"{clean_docs[1]} inasemaje kuhusu jambo hili?")
+        fallbacks = [
+            "Je, kuna tahadhari au maonyo yoyote muhimu?",
+            "Ni hatua gani muhimu zinazopendekezwa?",
+            "Ni mambo gani mengine yanayopaswa kuzingatiwa?",
+        ]
+        for fb in fallbacks:
+            if len(suggestions) >= 3:
+                break
+            if fb not in suggestions:
+                suggestions.append(fb)
+    else:
+        for t in topics[:2]:
+            suggestions.append(f"What does it recommend about {t.lower()}?")
+        if len(clean_docs) > 1 and len(suggestions) < 3:
+            suggestions.append(f"What does {clean_docs[1]} say about this?")
+        fallbacks = [
+            "What are the main precautions or warnings mentioned?",
+            "Are there specific troubleshooting steps?",
+            "What are the key requirements or procedures?",
+        ]
+        for fb in fallbacks:
+            if len(suggestions) >= 3:
+                break
+            if fb not in suggestions:
+                suggestions.append(fb)
+
+    return suggestions[:3]
+
+
+QUESTION_STARTERS = [
+    r"^(?:can\s+you\s+tell\s+me\s+(?:about\s+)?|tell\s+me\s+about\s+|please\s+explain\s+|i\s+want\s+to\s+know\s+)",
+    r"^(?:how\s+(?:often|many|much|long|far|high|can|do|should|would|to))\s+(?:i\s+|we\s+|a\s+|the\s+)?",
+    r"^(?:what\s+(?:is|are|does|do|share|percentage|level|capacity|duration))\s+(?:the\s+|of\s+|a\s+)?",
+    r"^(?:which\s+(?:direction|one|type|model|kind))\s+(?:should|is|are|do)?\s*",
+    r"^(?:why\s+(?:do|does|is|are))\s+",
+    r"^(?:should\s+i|can\s+i|is\s+it\s+(?:safe|better|recommended)\s+to)\s+",
+    r"^(?:what\s+should\s+i\s+do\s+(?:if|when)?)\s*",
+    r"^(?:to\s+what\s+)",
+    r"^(?:does\s+)",
+    r"^(?:of\s+|for\s+|to\s+|about\s+|in\s+)",
+    r"^(?:je,\s+|kwa nini\s+|wapi\s+|lini\s+|vipi\s+|ninapaswa\s+)",
+]
+
+
+def generate_chat_title(question: str, answer: str | None = None) -> str:
+    """Generate a clean, concise 3-6 word chat title from the first answer and question."""
+    ans = re.sub(r"\[S\d+(?:,\s*S\d+)*\]", "", answer or "").strip()
+    canned_markers = [
+        "do not contain passages", "not covered", "don't seem to cover",
+        "አልተገኙም", "hazina vifungu", "ይመልሱ አይመስሉም",
+    ]
+    is_canned = any(m in ans.lower() for m in canned_markers)
+
+    first_sentence = ""
+    if ans and not is_canned:
+        sentences = re.split(r"(?:(?<=[.!?።፧])|(?<=፡፡))\s+", ans)
+        if sentences:
+            s0 = sentences[0].strip().rstrip(".!?።")
+            s0 = re.sub(r"^(?:according to [^,]+,\s*|based on [^,]+,\s*|the passages? states? (?:that )?)", "", s0, flags=re.I)
+            if 8 <= len(s0) <= 60:
+                first_sentence = s0
+
+    q = question.strip().rstrip("?.! ፧።")
+    q_clean = q
+    for pat in QUESTION_STARTERS:
+        q_clean = re.sub(pat, "", q_clean, flags=re.I)
+
+    # Amharic question patterns
+    q_clean = re.sub(r"^(?:ስለ\s+)?(?:ምን\s+|እንዴት\s+|ለምን\s+)?", "", q_clean)
+    q_clean = re.sub(r"(?:ምን ያህል|ለምን ያህል ጊዜ|ስንት)(?:\s+መሆን አለበት|\s+መድረቅ አለበት)?", "", q_clean)
+
+    candidate = first_sentence if first_sentence and len(first_sentence) <= 45 else (q_clean or q)
+    candidate = re.sub(r"^(?:of\s+|for\s+|to\s+|about\s+|in\s+)", "", candidate.strip(), flags=re.I)
+    candidate = candidate.strip()
+
+    if candidate:
+        candidate = candidate[0].upper() + candidate[1:]
+
+    if len(candidate) > 46:
+        words = candidate.split()
+        res = ""
+        for w in words:
+            if len(res) + len(w) + 1 <= 46:
+                res = f"{res} {w}".strip()
+            else:
+                break
+        candidate = res or candidate[:46]
+
+    return candidate.rstrip(":,.- ") or q[:45]
+
+

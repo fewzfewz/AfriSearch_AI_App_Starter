@@ -154,6 +154,7 @@ export interface MessageData {
   removed_citations?: string[];
   error?: string | null;
   seconds?: number;
+  suggestions?: string[];
 }
 
 export interface Message {
@@ -176,7 +177,7 @@ export type StreamEvent =
       Pick<MessageData, "provider" | "model" | "reranked" | "covered" | "sources">
     >)
   | { type: "token"; text: string }
-  | { type: "done"; answer: string | null; removed_citations: string[]; message_id: string | null }
+  | { type: "done"; answer: string | null; removed_citations: string[]; message_id: string | null; suggestions?: string[]; chat_title?: string | null }
   | { type: "error"; detail: string; discard_partial?: boolean };
 
 export interface FeedbackRecord {

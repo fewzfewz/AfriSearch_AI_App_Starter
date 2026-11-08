@@ -36,7 +36,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 ### Answers and search
 - [ ] **More evaluation questions** in Somali, Afaan Oromo and Hausa (M): there's only one each, which is too few to judge. Ask pilot users for real questions and documents; add Tigrinya, Yoruba and Igbo test corpora.
 - [ ] **Layout and table-aware chunking** (M): parse tables in Excel (.xlsx), CSV, and PDF balance sheets as Markdown tables with headers preserved in each chunk, preventing broken context across rows. *(backend/text.py, backend/extract.py)*
-- [ ] **Suggested follow-up questions** under answers (S): generate 2–3 contextual suggestion chips below completed answers to prompt deeper exploration.
+- [x] **Suggested follow-up questions** under answers (S): generate 2–3 contextual suggestion chips below completed answers to prompt deeper exploration.
 - [x] **Check the reranker on Amharic**: it helps. Right document first for 5/6 Amharic questions with it, 4/6 without (English 25/25 vs 22/25). Kept on for all scripts.
 - [ ] **Watch the reranker on Swahili** (S): 4/5 with it vs 5/5 without (`sw-money-stolen`). One question is too few to act on; recheck with more Swahili questions.
 - [ ] **Tune the "not covered" threshold** (S) from real feedback: −4 stopped more off-topic questions on the test set but sits closer to real answers. *(`AFRISEARCH_MIN_RERANK_SCORE`)*
@@ -49,7 +49,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [x] **Invite people who haven't signed up yet**: they join the workspace when they first sign in with that email.
 - [x] **Send the invitation by email** (Resend or SMTP).
 - [x] **Share a chat** with the rest of the workspace (read-only).
-- [ ] **Rename chats automatically** from the first answer, instead of the truncated question (S).
+- [x] **Rename chats automatically** from the first answer, instead of the truncated question (S).
 - [ ] **Role-based access control (RBAC)** (M): Admin, Member and Viewer roles in workspaces to control upload, delete and member invite permissions. *(backend/db.py, backend/auth.py)*
 - [ ] **Confidential / restricted documents** (M): allow workspace owners to mark specific sensitive documents as private to designated members.
 

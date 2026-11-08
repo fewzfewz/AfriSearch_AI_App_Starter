@@ -26,13 +26,22 @@ def test_saved_questions_create_a_chat(indexed, fake_model):
     assert chat_id and events[-1]["message_id"]
 
     chats = indexed.get("/chats").json()["chats"]
-    assert [(c["id"], c["title"], c["questions"]) for c in chats] == [(chat_id, QUESTION, 1)]
+    assert [(c["id"], c["title"], c["questions"]) for c in chats] == [(chat_id, "Clean them every month", 1)]
     messages = indexed.get(f"/chats/{chat_id}").json()["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert messages[1]["content"] == "Clean them every month [S1]."
     assert messages[1]["data"]["sources"][0]["source_name"] == "guide.txt"
     assert messages[1]["data"]["provider"] == "fake"
     assert messages[1]["data"]["seconds"] is not None
+
+
+def test_custom_chat_title_is_preserved(indexed, fake_model):
+    chat = indexed.post("/chats", json={"title": "Solar Research 2026"}).json()
+    chat_id = chat["id"]
+    stream(indexed, question=QUESTION, chat_id=chat_id)
+    chat_after = indexed.get(f"/chats/{chat_id}").json()
+    assert chat_after["title"] == "Solar Research 2026"
+
 
 
 def test_unsaved_questions_leave_no_chat(indexed, fake_model):

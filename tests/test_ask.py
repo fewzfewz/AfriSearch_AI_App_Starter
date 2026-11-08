@@ -87,3 +87,14 @@ def test_providers_endpoint_lists_models_and_default(client, fake_model):
     ids = {provider["id"] for provider in body["providers"]}
     assert {"claude", "chatgpt", "gemini", "qwen", "gemma", "gpt-oss", "qwen-small", "fake"} <= ids
     assert body["default"] == "fake"
+
+
+def test_ask_returns_suggested_follow_up_questions(indexed, fake_model):
+    response = ask(indexed, "How often should solar panels be cleaned?")
+    assert response.status_code == 200
+    body = response.json()
+    assert "suggestions" in body
+    assert isinstance(body["suggestions"], list)
+    assert len(body["suggestions"]) > 0
+    assert any("?" in s or "።" in s for s in body["suggestions"])
+

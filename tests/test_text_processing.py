@@ -70,3 +70,45 @@ def test_format_pages():
     assert format_pages(None, None) == ""
     assert format_pages(3, 3) == "page 3"
     assert format_pages(3, 5, prefix=", ") == ", pages 3-5"
+
+
+def test_generate_suggestions_handles_empty_and_not_covered():
+    from backend.answers import generate_suggestions
+
+    empty_en = generate_suggestions("What should I do?", [])
+    assert len(empty_en) == 3
+    assert any("documents" in s for s in empty_en)
+
+    not_cov = generate_suggestions("Quantum physics?", [{"source_name": "solar_guide.txt", "text": "Panels."}], covered=False)
+    assert len(not_cov) == 3
+    assert any("solar guide" in s for s in not_cov)
+
+
+def test_generate_suggestions_extracts_headings_in_multiple_languages():
+    from backend.answers import generate_suggestions
+
+    en_src = [{"source_name": "solar.txt", "text": "Panels. Clean dust.\n\nBatteries. Keep charged.\n\nInverter. Inspect yearly."}]
+    sugs_en = generate_suggestions("How to clean solar panels?", en_src)
+    assert len(sugs_en) >= 2
+    assert any("batteries" in s.lower() or "inverter" in s.lower() for s in sugs_en)
+
+    am_src = [{"source_name": "coffee.txt", "text": "ጥላ። በደንብ ያድጋሉ።\n\nለቀማ። ቀይ ፍሬ ይልቀሙ።"}]
+    sugs_am = generate_suggestions("የቡና ፍሬ ማድረቅ?", am_src)
+    assert len(sugs_am) >= 2
+    assert any("ለቀማ" in s or "ጥላ" in s for s in sugs_am)
+
+
+def test_generate_chat_title():
+    from backend.answers import generate_chat_title
+
+    t1 = generate_chat_title("What is the battery capacity of the SB-500 kit?", "The battery capacity is 307 watt-hours [S1].")
+    assert "battery capacity" in t1.lower()
+    assert len(t1) <= 48
+
+    t2 = generate_chat_title("How often should solar panels be cleaned?", "Clean them every month [S1].")
+    assert t2 == "Clean them every month"
+
+    t3 = generate_chat_title("የቡና ፍሬ ለምን ያህል ጊዜ መድረቅ አለበት?", "የተለቀመውን ፍሬ ከሁለት እስከ ሶስት ሳምንት ያድርቁ።")
+    assert "የተለቀመውን ፍሬ" in t3 or "የቡና ፍሬ" in t3
+
+
