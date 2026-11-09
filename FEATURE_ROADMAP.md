@@ -231,22 +231,20 @@ This roadmap provides an ordered, risk-mitigated development plan for AfriSearch
 
 ---
 
-### TASK-P1-03: Chat History Cursor Pagination
+### TASK-P1-03: Chat History Cursor Pagination (COMPLETED)
+- **Status:** Completed & Verified (219/219 Backend tests, 5/5 Vitest, clean Vite build)
 - **Priority:** P1 (High)
-- **Problem Being Solved:** `GET /api/chats` currently queries `LIMIT 100`. Power users or organizations with active usage cannot access older conversations.
+- **Problem Being Solved:** Pre-pagination, `GET /api/chats` queried a hard-coded limit, restricting access to older conversations for active users.
 - **Relevant Files:**
-  - `backend/db.py:list_chats`
-  - `backend/main.py:list_chats`
+  - `backend/db.py`
+  - `backend/main.py`
   - `web/src/pages/AppLayout.tsx`
-- **Proposed Changes:**
-  - Add `before` (timestamp cursor) and `limit` query parameters to `GET /api/chats`.
-  - Implement infinite scroll or "Load more chats" button in the sidebar.
-- **Dependencies:** None.
-- **Acceptance Criteria:**
-  - Users with >100 chats can scroll to dynamically load previous chat batches.
-  - Chat list groups by date accurately ("Today", "Yesterday", "Previous 7 days", "Earlier").
-- **Tests Required:** Unit tests in `test_chats.py` verifying cursor offset and ordering.
-- **Risks & Rollback:** Low risk; backward-compatible API change.
+  - `tests/test_chats.py`
+- **Delivered Capabilities:**
+  - Added `before` (timestamp ISO cursor) and `limit` query parameters to `GET /api/chats` and `db.list_chats()`.
+  - Maintained backward compatibility returning `chats`, `shared`, `has_more`, and `next_cursor`.
+  - Added "Load earlier chats" action in `AppLayout.tsx` which seamlessly appends subsequent pages to the sidebar chat list while preserving date grouping.
+  - Added unit tests in `tests/test_chats.py` verifying cursor offset, page boundaries, and reverse-chronological ordering.
 
 ---
 

@@ -18,7 +18,7 @@ The project has evolved from an initial single-file Streamlit prototype (v0.1.0)
 - Production tooling including Tesseract OCR (with Ethiopic and Swahili scripts), transactional email, Sentry telemetry, automated backups, and Caddy reverse-proxy SSL configurations.
 
 ### Key Verification Findings
-- **Backend Tests:** 218 / 218 tests passing in pytest (using Python 3.11 virtual environment `pytorch_env`), including full coverage for Organizations, Subscriptions DB, Entitlement Enforcement, Workspace RBAC, Payment Gateways & Invoicing, and Table-Aware Extraction.
+- **Backend Tests:** 219 / 219 tests passing in pytest (using Python 3.11 virtual environment `pytorch_env`), including full coverage for Organizations, Subscriptions DB, Entitlement Enforcement, Workspace RBAC, Payment Gateways & Invoicing, Table-Aware Extraction, and Chat Cursor Pagination.
 - **Frontend Unit Tests:** 5 / 5 tests passing in Vitest.
 - **Frontend Typecheck & Build:** `tsc -b` and `vite build` completed with 0 errors (2,119 modules transformed), outputting optimized bundles to `web/dist/`.
 - **Multi-Tenant Foundation (SAAS-P0-01):** Completed and verified across database, authorization, REST APIs, and UI layers. Organizations own workspaces; isolation and containment strictly enforced server-side.
@@ -26,6 +26,7 @@ The project has evolved from an initial single-file Streamlit prototype (v0.1.0)
 - **Workspace RBAC (Owner, Admin, Member, Viewer):** Completed and verified. Hierarchical role validation on all document mutations, tagging, member invitations, role updates, and viewer query-only boundaries with responsive UI controls.
 - **Payment Gateways & Invoicing (SAAS-P1-02):** Completed and verified. Dual-provider billing engine for Stripe (global credit cards, checkout sessions, customer portal) and Chapa (Ethiopian rails: Telebirr, CBE Birr in ETB), with HMAC signature verification, idempotent webhook journal (`webhook_events`), and audit-ready invoices ledger (`invoices`).
 - **Table-Aware Extraction & Structured Markdown Preservation (TASK-P1-01):** Completed and verified. High-fidelity GitHub-flavored Markdown table extraction for Excel (`.xlsx`), CSV (`.csv`), and Word (`.docx`), table-boundary aware sentence splitting, and cross-chunk table header preservation for tabular RAG accuracy.
+- **Chat History Cursor Pagination (TASK-P1-03):** Completed and verified. Cursor-based pagination (`before` timestamp cursor + `limit`) across SQLite DB and REST APIs with seamless UI "Load earlier chats" continuation.
 - **Core AI Insight:** Evaluation results confirm that while the semantic retrieval pipeline achieves **92.3% Hit@1** and **97.4% Hit@K** (MRR 0.944), the small local model (`Qwen 2.5 0.5B`) achieves only 36% answer accuracy (0% on African-language questions). Consequently, cloud API models (Claude, ChatGPT, Gemini) or larger local models are mandatory for reliable pilot deployments.
 
 ---

@@ -1241,14 +1241,21 @@ def create_chat(workspace_id: str, user_id: str, title: str) -> dict[str, Any]:
     return chat
 
 
-def list_chats(workspace_id: str, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def list_chats(workspace_id: str, user_id: str, limit: int = 50, before: str | None = None) -> list[dict[str, Any]]:
+    query = (
+        "SELECT c.id, c.title, c.created_at, c.updated_at, c.shared, "
+        "(SELECT count(*) FROM messages WHERE chat_id = c.id AND role = 'user') AS questions "
+        "FROM chats c WHERE c.workspace_id = ? AND c.user_id = ?"
+    )
+    params: list[Any] = [workspace_id, user_id]
+    if before:
+        query += " AND c.updated_at < ?"
+        params.append(before.strip())
+    query += " ORDER BY c.updated_at DESC LIMIT ?"
+    params.append(limit)
+
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT c.id, c.title, c.created_at, c.updated_at, c.shared, "
-            "(SELECT count(*) FROM messages WHERE chat_id = c.id AND role = 'user') AS questions "
-            "FROM chats c WHERE c.workspace_id = ? AND c.user_id = ? ORDER BY c.updated_at DESC LIMIT ?",
-            (workspace_id, user_id, limit),
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
 
 

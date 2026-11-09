@@ -266,3 +266,46 @@ def test_old_databases_get_the_shared_column(app_env, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", old)
     with db.connect() as c:
         assert "shared" in {row[1] for row in c.execute("PRAGMA table_info(chats)")}
+
+
+def test_chat_cursor_pagination(client):
+    from backend import db
+
+    db.ensure_user("local", "local@localhost", "Local User")
+    ws = db.create_workspace("Pagination Workspace", "local")
+    ws_id = ws["id"]
+    headers = {"X-Workspace-Id": ws_id}
+
+    chat_ids = []
+    for i in range(1, 6):
+        chat = db.create_chat(ws_id, "local", f"Conversation {i}")
+        # Artificially space updated_at so cursor ordering is deterministic
+        ts = f"2026-11-09T10:0{i}:00Z"
+        with db.connect() as conn:
+            conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (ts, chat["id"]))
+        chat_ids.append(chat["id"])
+
+    # 1. Fetch first page with limit=2 (most recent: Conv 5, Conv 4)
+    res1 = client.get("/chats?limit=2", headers=headers).json()
+    assert len(res1["chats"]) == 2
+    assert res1["chats"][0]["title"] == "Conversation 5"
+    assert res1["chats"][1]["title"] == "Conversation 4"
+    assert res1["has_more"] is True
+    assert res1["next_cursor"] == "2026-11-09T10:04:00Z"
+
+    # 2. Fetch second page with before cursor
+    cursor1 = res1["next_cursor"]
+    res2 = client.get(f"/chats?limit=2&before={cursor1}", headers=headers).json()
+    assert len(res2["chats"]) == 2
+    assert res2["chats"][0]["title"] == "Conversation 3"
+    assert res2["chats"][1]["title"] == "Conversation 2"
+    assert res2["has_more"] is True
+    assert res2["next_cursor"] == "2026-11-09T10:02:00Z"
+
+    # 3. Fetch third and final page
+    cursor2 = res2["next_cursor"]
+    res3 = client.get(f"/chats?limit=2&before={cursor2}", headers=headers).json()
+    assert len(res3["chats"]) == 1
+    assert res3["chats"][0]["title"] == "Conversation 1"
+    assert res3["has_more"] is False
+    assert res3["next_cursor"] is None

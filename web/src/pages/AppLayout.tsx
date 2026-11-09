@@ -19,9 +19,19 @@ import { useWorkspace } from "../lib/workspace";
 interface ChatsState {
   chats: ChatSummary[];
   shared: ChatSummary[]; // chats other members shared with this workspace
+  hasMore: boolean;
+  loadMore: () => Promise<void>;
+  loadingMore: boolean;
   reload: () => void;
 }
-const ChatsContext = createContext<ChatsState>({ chats: [], shared: [], reload: () => {} });
+const ChatsContext = createContext<ChatsState>({
+  chats: [],
+  shared: [],
+  hasMore: false,
+  loadMore: async () => {},
+  loadingMore: false,
+  reload: () => {},
+});
 export const useChats = () => useContext(ChatsContext);
 
 const NAV = [
@@ -232,7 +242,7 @@ function chatLinkClass(active: boolean) {
 }
 
 function ChatList({ onNavigate }: { onNavigate: () => void }) {
-  const { chats, reload } = useChats();
+  const { chats, reload, hasMore, loadMore, loadingMore } = useChats();
   // The sidebar sits outside the chat route, so read the open chat from the URL.
   const chatId = useLocation().pathname.match(/^\/app\/chat\/([^/]+)/)?.[1];
   const navigate = useNavigate();
@@ -292,6 +302,19 @@ function ChatList({ onNavigate }: { onNavigate: () => void }) {
           </ul>
         </div>
       ))}
+      {hasMore && (
+        <div className="px-2 pt-1 pb-3 text-center">
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={loadingMore}
+            onClick={loadMore}
+            className="w-full text-xs text-ink-500 hover:text-ink-700 dark:hover:text-ink-300"
+          >
+            Load earlier chats
+          </Button>
+        </div>
+      )}
       <NameDialog
         open={Boolean(renaming)}
         title="Rename chat"
@@ -518,13 +541,40 @@ export function AppLayout() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [shared, setShared] = useState<ChatSummary[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const location = useLocation();
   const commands = useCommands(chats, shared, paletteOpen);
 
   const reloadChats = useCallback(() => {
     if (!current) return;
-    api<{ chats: ChatSummary[]; shared: ChatSummary[] }>("/chats").then((r) => { setChats(r.chats); setShared(r.shared ?? []); }).catch(() => {});
+    api<{ chats: ChatSummary[]; shared: ChatSummary[]; has_more?: boolean; next_cursor?: string | null }>("/chats?limit=50")
+      .then((r) => {
+        setChats(r.chats);
+        setShared(r.shared ?? []);
+        setHasMore(Boolean(r.has_more));
+        setNextCursor(r.next_cursor ?? null);
+      })
+      .catch(() => {});
   }, [current]);
+
+  const loadMore = useCallback(async () => {
+    if (!current || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const r = await api<{ chats: ChatSummary[]; has_more?: boolean; next_cursor?: string | null }>(
+        `/chats?limit=50&before=${encodeURIComponent(nextCursor)}`
+      );
+      setChats((prev) => [...prev, ...r.chats]);
+      setHasMore(Boolean(r.has_more));
+      setNextCursor(r.next_cursor ?? null);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [current, nextCursor, loadingMore]);
   useEffect(reloadChats, [reloadChats]);
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
@@ -559,7 +609,7 @@ export function AppLayout() {
   }
 
   return (
-    <ChatsContext.Provider value={{ chats, shared, reload: reloadChats }}>
+    <ChatsContext.Provider value={{ chats, shared, hasMore, loadMore, loadingMore, reload: reloadChats }}>
       <div className="flex h-[100dvh] overflow-hidden bg-ink-50 dark:bg-ink-950">
         <aside className={cx("hidden shrink-0 transition-[width] duration-200 lg:block", collapsed ? "w-[68px]" : "w-72")}>
           <Sidebar onNavigate={() => {}} collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onSearch={() => setPaletteOpen(true)} />

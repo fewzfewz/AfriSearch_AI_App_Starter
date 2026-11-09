@@ -1248,10 +1248,22 @@ def owned_chat(chat_id: str, workspace: Workspace) -> dict[str, Any]:
 
 
 @api.get("/chats")
-def list_chats(workspace: Workspace = Depends(current_workspace)):
+def list_chats(
+    before: str | None = None,
+    limit: int = 50,
+    workspace: Workspace = Depends(current_workspace),
+):
     """The user's chats, and chats others have shared with this workspace."""
-    return {"chats": db.list_chats(workspace.id, workspace.user.id),
-            "shared": db.list_shared_chats(workspace.id, workspace.user.id)}
+    chats = db.list_chats(workspace.id, workspace.user.id, limit=limit, before=before)
+    shared = db.list_shared_chats(workspace.id, workspace.user.id) if before is None else []
+    has_more = len(chats) == limit
+    next_cursor = chats[-1]["updated_at"] if chats and has_more else None
+    return {
+        "chats": chats,
+        "shared": shared,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @api.post("/chats", status_code=201)
