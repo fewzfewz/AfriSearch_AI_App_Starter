@@ -1,8 +1,8 @@
 // Workspace, team, appearance and account settings.
 import {
-  AlertTriangle, Building2, Download, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
+  AlertTriangle, Building2, Download, FolderOpen, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge, Button, Card, ConfirmDialog, PageHeader, cx, useToast } from "../components/ui";
 import { api, downloadFile } from "../lib/api";
@@ -19,7 +19,8 @@ interface Team {
 }
 
 const SECTIONS = [
-  { id: "workspace", title: "Workspace", icon: Building2 },
+  { id: "organization", title: "Organization", icon: Building2 },
+  { id: "workspace", title: "Workspace", icon: FolderOpen },
   { id: "members", title: "Members", icon: Users },
   { id: "appearance", title: "Appearance", icon: Palette },
   { id: "account", title: "Account", icon: UserRound },
@@ -51,21 +52,34 @@ function Section({ id, description, children, danger }: { id: (typeof SECTIONS)[
 const inputClass = "w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-900";
 
 export function SettingsPage() {
-  const { current, workspaces, user, reload, switchTo } = useWorkspace();
+  const { current, organizations, currentOrganization, workspaces, user, reload, switchOrganization, switchTo } = useWorkspace();
   const { config, signOut } = useAuth();
   const [theme, setTheme] = useTheme();
   const toast = useToast();
   const navigate = useNavigate();
   const isOwner = current?.role === "owner";
+  const isOrgOwner = currentOrganization?.role === "owner" || currentOrganization?.owner_id === user?.id;
   const [name, setName] = useState(current?.name ?? "");
+  const [orgName, setOrgName] = useState(currentOrganization?.name ?? "");
   const [saving, setSaving] = useState(false);
+  const [savingOrg, setSavingOrg] = useState(false);
   const [email, setEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmName, setConfirmName] = useState("");
+  const [deleteOrgOpen, setDeleteOrgOpen] = useState(false);
+  const [confirmOrgName, setConfirmOrgName] = useState("");
   const [exporting, setExporting] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [confirmAccount, setConfirmAccount] = useState("");
+
+  useEffect(() => {
+    if (current?.name) setName(current.name);
+  }, [current?.name]);
+
+  useEffect(() => {
+    if (currentOrganization?.name) setOrgName(currentOrganization.name);
+  }, [currentOrganization?.name]);
 
   const exportData = async () => {
     setExporting(true);
@@ -82,6 +96,20 @@ export function SettingsPage() {
   const members = useApi<Team>(current ? `/workspaces/${current.id}/members` : null);
   const system = useApi<DocumentsResponse>("/documents");
   const multiUser = config?.auth === "supabase";
+
+  const renameOrg = async () => {
+    if (!currentOrganization) return;
+    setSavingOrg(true);
+    try {
+      await api(`/organizations/${currentOrganization.id}`, { method: "PATCH", json: { name: orgName.trim() } });
+      await reload();
+      toast("Organization renamed");
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setSavingOrg(false);
+    }
+  };
 
   const rename = async () => {
     setSaving(true);
@@ -133,7 +161,7 @@ export function SettingsPage() {
       <div className="mt-8 lg:grid lg:grid-cols-[180px_1fr] lg:gap-8">
         <nav aria-label="Settings sections" className="hidden lg:block">
           <ul className="sticky top-6 space-y-0.5 text-sm">
-            {SECTIONS.filter((s) => s.id !== "danger" || isOwner).map(({ id, title, icon: Icon }) => (
+            {SECTIONS.filter((s) => s.id !== "danger" || isOwner || isOrgOwner).map(({ id, title, icon: Icon }) => (
               <li key={id}>
                 <a href={`#${id}`} className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-ink-600 transition hover:bg-ink-100 hover:text-ink-900 dark:text-ink-400 dark:hover:bg-ink-800 dark:hover:text-white">
                   <Icon className="h-4 w-4" /> {title}
@@ -143,6 +171,40 @@ export function SettingsPage() {
           </ul>
         </nav>
         <div className="space-y-5">
+        {currentOrganization && (
+          <Section id="organization" description="An organization represents your team or company, and contains your workspaces.">
+            <label htmlFor="org-name" className="text-sm font-medium">Organization name</label>
+            <div className="mt-1.5 flex gap-2">
+              <input
+                id="org-name"
+                value={orgName}
+                maxLength={80}
+                disabled={!isOrgOwner}
+                onChange={(e) => setOrgName(e.target.value)}
+                className={inputClass}
+              />
+              <Button
+                variant="primary"
+                loading={savingOrg}
+                disabled={!isOrgOwner || !orgName.trim() || orgName.trim() === currentOrganization.name}
+                onClick={renameOrg}
+              >
+                Save
+              </Button>
+            </div>
+            {!isOrgOwner && <p className="mt-2 text-xs text-ink-500">Only the organization owner can rename this organization.</p>}
+            <div className="mt-4 flex flex-wrap items-center gap-4 rounded-xl border border-ink-200/80 p-3.5 text-sm dark:border-ink-800">
+              <div className="flex items-center gap-2">
+                <span className="text-ink-500">Role:</span>
+                <Badge tone={isOrgOwner ? "brand" : "gray"}>{currentOrganization.role}</Badge>
+              </div>
+              <div className="text-ink-500">
+                Workspaces: <span className="font-medium text-ink-900 dark:text-ink-100">{workspaces.filter((w) => !w.organization_id || w.organization_id === currentOrganization.id).length}</span>
+              </div>
+            </div>
+          </Section>
+        )}
+
         <Section id="workspace" description="A workspace holds documents and chats. Create one per team, project or client.">
           <label htmlFor="ws-name" className="text-sm font-medium">Name</label>
           <div className="mt-1.5 flex gap-2">
@@ -252,17 +314,32 @@ export function SettingsPage() {
           </p>
         </Section>
 
-        {isOwner && (
+        {(isOwner || isOrgOwner) && (
           <Section id="danger" danger>
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">Delete this workspace</p>
-                <p className="text-sm text-ink-500">Deletes its documents, chats and feedback for everyone. This can't be undone.</p>
-              </div>
-              <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} disabled={workspaces.length < 2}
-                title={workspaces.length < 2 ? "You can't delete your only workspace" : undefined} onClick={() => setDeleteOpen(true)}>
-                Delete workspace
-              </Button>
+            <div className="space-y-5">
+              {isOwner && (
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">Delete this workspace</p>
+                    <p className="text-sm text-ink-500">Deletes its documents, chats and feedback for everyone. This can't be undone.</p>
+                  </div>
+                  <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} disabled={workspaces.length < 2}
+                    title={workspaces.length < 2 ? "You can't delete your only workspace" : undefined} onClick={() => setDeleteOpen(true)}>
+                    Delete workspace
+                  </Button>
+                </div>
+              )}
+              {isOrgOwner && organizations.length > 1 && (
+                <div className={cx("flex flex-wrap items-center gap-4", isOwner && "border-t border-ink-100 pt-5 dark:border-ink-800")}>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">Delete this organization</p>
+                    <p className="text-sm text-ink-500">Deletes the organization and all its workspaces. Only allowed when no other members remain.</p>
+                  </div>
+                  <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => setDeleteOrgOpen(true)}>
+                    Delete organization
+                  </Button>
+                </div>
+              )}
             </div>
           </Section>
         )}
@@ -309,6 +386,31 @@ export function SettingsPage() {
         <p>All documents, chats and feedback in this workspace will be deleted for everyone. Type <strong className="text-ink-900 dark:text-white">{current.name}</strong> to confirm.</p>
         <input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} aria-label="Workspace name" className={cx(inputClass, "mt-3")} />
       </ConfirmDialog>
+
+      {currentOrganization && (
+        <ConfirmDialog
+          open={deleteOrgOpen}
+          title={`Delete ${currentOrganization.name}?`}
+          confirmLabel="Delete forever"
+          onClose={() => { setDeleteOrgOpen(false); setConfirmOrgName(""); }}
+          confirmDisabled={confirmOrgName !== currentOrganization.name}
+          onConfirm={async () => {
+            try {
+              await api(`/organizations/${currentOrganization.id}`, { method: "DELETE" });
+              const nextOrg = organizations.find((o) => o.id !== currentOrganization.id);
+              if (nextOrg) switchOrganization(nextOrg.id);
+              await reload();
+              navigate("/app");
+              toast("Organization deleted");
+            } catch (e) {
+              toast((e as Error).message, "error");
+            }
+          }}
+        >
+          <p>All workspaces, documents, and chats in this organization will be permanently deleted for everyone. Type <strong className="text-ink-900 dark:text-white">{currentOrganization.name}</strong> to confirm.</p>
+          <input value={confirmOrgName} onChange={(e) => setConfirmOrgName(e.target.value)} aria-label="Organization name" className={cx(inputClass, "mt-3")} />
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

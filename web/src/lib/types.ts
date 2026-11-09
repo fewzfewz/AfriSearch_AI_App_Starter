@@ -23,11 +23,42 @@ export interface User {
   name: string;
 }
 
+export interface Organization {
+  id: string;
+  name: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+  role: "owner" | "admin" | "member";
+  member_count?: number;
+  workspace_count?: number;
+}
+
+export interface OrganizationMember {
+  id: string;
+  email: string;
+  name: string;
+  role: "owner" | "admin" | "member";
+  joined_at: string;
+}
+
+export interface OrganizationInvitation {
+  id: string;
+  organization_id: string;
+  email: string;
+  role: "admin" | "member";
+  expires_at: string;
+  invited_by: string;
+  created_at: string;
+  token?: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
   role: "owner" | "member";
   created_at: string;
+  organization_id?: string;
   member_count?: number;
 }
 

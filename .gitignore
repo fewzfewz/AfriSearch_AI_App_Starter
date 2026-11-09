@@ -15,4 +15,5 @@ data/workspaces/
 data/feedback.jsonl*
 web/node_modules/
 web/dist/
+backups/
 .env

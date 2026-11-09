@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from backend import __version__, answers, config, db, extract, jobs, limits, llm, mailer, models, store
-from backend.auth import User, current_user
+from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -129,6 +129,27 @@ class DocumentTagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=20)
 
 
+class CreateOrganizationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class RenameOrganizationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TransferOwnershipRequest(BaseModel):
+    new_owner_id: str = Field(min_length=1)
+
+
+class InviteOrganizationMemberRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    role: Literal["admin", "member"] = "member"
+
+
+class AcceptInvitationRequest(BaseModel):
+    token: str = Field(min_length=10, max_length=256)
+
+
 # --- workspaces ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -137,6 +158,7 @@ class Workspace:
     name: str
     role: str
     user: User
+    organization_id: str
 
     @property
     def store(self) -> store.DocumentStore:
@@ -172,35 +194,76 @@ def import_legacy_data(workspace_id: str) -> None:
 _first_workspace_lock = threading.Lock()
 
 
-def user_workspaces(user: User) -> list[dict[str, Any]]:
+def user_workspaces(user: User, organization_id: str | None = None) -> list[dict[str, Any]]:
     """The user's workspaces; a first one is created for new users."""
-    workspaces = db.list_workspaces(user.id)
+    workspaces = db.list_workspaces(user.id, organization_id=organization_id)
     if not workspaces:
         with _first_workspace_lock:  # two first requests at once must not create two
-            workspaces = db.list_workspaces(user.id)
+            workspaces = db.list_workspaces(user.id, organization_id=organization_id)
             if not workspaces:
-                workspace = db.create_workspace(DEFAULT_WORKSPACE_NAME, user.id)
+                workspace = db.create_workspace(
+                    DEFAULT_WORKSPACE_NAME, user.id, organization_id=organization_id
+                )
                 if user.id == "local":
                     import_legacy_data(workspace["id"])
-                workspaces = db.list_workspaces(user.id)
+                workspaces = db.list_workspaces(user.id, organization_id=organization_id)
     return workspaces
 
 
+def get_workspace_membership(
+    workspace_id: str, user_id: str, organization_id: str
+) -> dict[str, Any] | None:
+    """Retrieve workspace membership within an organization.
+
+    In Stage A, access is derived from organization containment and membership.
+    Fine-grained workspace-level roles (viewer, editor, admin) will plug into this hook.
+    """
+    return db.get_workspace(workspace_id, user_id, organization_id=organization_id)
+
+
 def current_workspace(
-    user: User = Depends(current_user), x_workspace_id: str | None = Header(default=None),
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+    x_workspace_id: str | None = Header(default=None),
 ) -> Workspace:
-    """FastAPI dependency: the workspace named in the X-Workspace-Id header, or the user's first one."""
+    """FastAPI dependency: the workspace named in X-Workspace-Id, or the first workspace in the active organization."""
+    if x_organization_id:
+        org = db.get_organization(x_organization_id, user.id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+        org_id = org["id"]
+    else:
+        org_id = None
+
     if x_workspace_id:
-        found = db.get_workspace(x_workspace_id, user.id)
+        found = get_workspace_membership(x_workspace_id, user.id, org_id) if org_id else db.get_workspace(x_workspace_id, user.id)
         if not found:
             raise HTTPException(status_code=404, detail="Workspace not found.")
     else:
-        found = user_workspaces(user)[0]
-    return Workspace(id=found["id"], name=found["name"], role=found["role"], user=user)
+        if not org_id:
+            user_orgs = db.list_user_organizations(user.id)
+            if not user_orgs:
+                name_cand = user.name.strip()
+                org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+                new_org = db.create_organization(org_name, user.id)
+                org_id = new_org["id"]
+            else:
+                org_id = user_orgs[0]["id"]
+        workspaces = user_workspaces(user, organization_id=org_id)
+        found = workspaces[0]
+
+    return Workspace(
+        id=found["id"],
+        name=found["name"],
+        role=found["role"],
+        user=user,
+        organization_id=found.get("organization_id", org_id or ""),
+    )
 
 
-def owned_workspace(workspace_id: str, user: User) -> dict[str, Any]:
-    found = db.get_workspace(workspace_id, user.id)
+def owned_workspace(workspace_id: str, user: User, org: Organization | None = None) -> dict[str, Any]:
+    org_id = org.id if org else None
+    found = db.get_workspace(workspace_id, user.id, organization_id=org_id)
     if not found:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     if found["role"] != "owner":
@@ -267,7 +330,11 @@ def public_config():
 
 @api.get("/me")
 def me(user: User = Depends(current_user)):
-    return {"user": {"id": user.id, "email": user.email, "name": user.name}, "workspaces": user_workspaces(user)}
+    return {
+        "user": {"id": user.id, "email": user.email, "name": user.name},
+        "organizations": db.list_user_organizations(user.id),
+        "workspaces": user_workspaces(user),
+    }
 
 
 @api.get("/me/export")
@@ -333,16 +400,203 @@ def list_providers(user: User = Depends(current_user)):
     }
 
 
+# --- organization management --------------------------------------------------------
+
+@api.get("/organizations")
+def list_organizations(user: User = Depends(current_user)):
+    return {"organizations": db.list_user_organizations(user.id)}
+
+
+@api.post("/organizations", status_code=201)
+def create_organization(body: CreateOrganizationRequest, user: User = Depends(current_user)):
+    try:
+        org = db.create_organization(body.name.strip(), user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return org
+
+
+@api.get("/organizations/{org_id}")
+def get_organization(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    return org
+
+
+@api.patch("/organizations/{org_id}")
+def rename_organization(org_id: str, body: RenameOrganizationRequest, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can rename the organization.")
+    try:
+        db.rename_organization(org_id, body.name.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return db.get_organization(org_id, user.id)
+
+
+@api.delete("/organizations/{org_id}")
+def delete_organization(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Only the organization owner can delete the organization.")
+    try:
+        db.delete_organization(org_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return {"message": "Organization deleted."}
+
+
+@api.post("/organizations/{org_id}/transfer-ownership")
+def transfer_organization_ownership(
+    org_id: str, body: TransferOwnershipRequest, user: User = Depends(current_user)
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Only the organization owner can transfer ownership.")
+    try:
+        db.transfer_organization_ownership(org_id, user.id, body.new_owner_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"message": "Ownership transferred successfully."}
+
+
+@api.get("/organizations/{org_id}/members")
+def list_organization_members(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    return {"members": db.list_organization_members(org_id)}
+
+
+@api.delete("/organizations/{org_id}/members/{target_user_id}")
+def remove_organization_member(
+    org_id: str, target_user_id: str, user: User = Depends(current_user)
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if target_user_id == user.id:
+        if org["role"] == "owner":
+            raise HTTPException(
+                status_code=400, detail="Organization owner cannot leave. Transfer ownership first."
+            )
+    else:
+        if org["role"] not in ("owner", "admin"):
+            raise HTTPException(
+                status_code=403, detail="Only organization owners and admins can remove members."
+            )
+    try:
+        db.remove_organization_member(org_id, target_user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"members": db.list_organization_members(org_id), "message": "Member removed."}
+
+
+@api.post("/organizations/{org_id}/invitations", status_code=201)
+def create_organization_invitation(
+    org_id: str, body: InviteOrganizationMemberRequest, user: User = Depends(current_user)
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] not in ("owner", "admin"):
+        raise HTTPException(
+            status_code=403, detail="Only organization owners and admins can invite members."
+        )
+    try:
+        invitation, raw_token = db.create_organization_invitation(
+            org_id, body.email, body.role, user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if mailer.enabled():
+        mailer.send(
+            mailer.organization_invitation(
+                to=body.email,
+                inviter=user.name or user.email,
+                organization=org["name"],
+                role=body.role,
+                raw_token=raw_token,
+            )
+        )
+    return {**invitation, "token": raw_token}
+
+
+@api.get("/organizations/{org_id}/invitations")
+def list_organization_invitations(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can view invitations.")
+    return {"invitations": db.list_organization_invitations(org_id)}
+
+
+@api.delete("/organizations/{org_id}/invitations/{email}")
+def cancel_organization_invitation(
+    org_id: str, email: str, user: User = Depends(current_user)
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org["role"] not in ("owner", "admin"):
+        raise HTTPException(
+            status_code=403, detail="Only organization owners and admins can cancel invitations."
+        )
+    db.cancel_organization_invitation(org_id, email)
+    return {
+        "invitations": db.list_organization_invitations(org_id),
+        "message": "Invitation cancelled.",
+    }
+
+
+@api.post("/organizations/invitations/accept")
+def accept_organization_invitation(
+    body: AcceptInvitationRequest, user: User = Depends(current_user)
+):
+    if config.AUTH_MODE == "supabase" and not user.email:
+        raise HTTPException(
+            status_code=400,
+            detail="A verified email address is required to accept an organization invitation.",
+        )
+    try:
+        result = db.accept_organization_invitation(body.token, user.id, user.email)
+    except ValueError as exc:
+        err_msg = str(exc)
+        if "expired" in err_msg.lower():
+            raise HTTPException(status_code=410, detail=err_msg)
+        elif "sent to" in err_msg.lower():
+            raise HTTPException(status_code=403, detail=err_msg)
+        else:
+            raise HTTPException(status_code=404, detail=err_msg)
+    return {
+        "message": "Invitation accepted.",
+        "organization_id": result["organization_id"],
+        "role": result["role"],
+    }
+
+
 # --- workspace management ----------------------------------------------------------------
 
 @api.get("/workspaces")
-def list_workspaces(user: User = Depends(current_user)):
-    return {"workspaces": user_workspaces(user)}
+def list_workspaces(org: Organization = Depends(current_organization)):
+    return {"workspaces": user_workspaces(org.user, organization_id=org.id)}
 
 
 @api.post("/workspaces", status_code=201)
-def create_workspace(body: NameRequest, user: User = Depends(current_user)):
-    return db.create_workspace(body.name.strip(), user.id)
+def create_workspace(body: NameRequest, org: Organization = Depends(current_organization)):
+    return db.create_workspace(body.name.strip(), org.user.id, organization_id=org.id)
 
 
 @api.patch("/workspaces/{workspace_id}")

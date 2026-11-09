@@ -145,6 +145,15 @@ def invitation(to: str, inviter: str, workspace: str, has_account: bool) -> Emai
     ], ("Accept the invitation", _link("/signin")))
 
 
+def organization_invitation(to: str, inviter: str, organization: str, role: str, raw_token: str) -> Email:
+    link = _link(f"/invite?token={raw_token}")
+    return _compose(to, f"{inviter} invited you to join {organization} on AfriSearch", [
+        f"{inviter} invited you to join “{organization}” as {role} on AfriSearch AI.",
+        "AfriSearch AI helps organizations turn documents into searchable knowledge with citations.",
+        "Click the link below to accept the invitation and access the organization's workspaces.",
+    ], ("Accept Invitation", link))
+
+
 def welcome(to: str, name: str) -> Email:
     return _compose(to, "Welcome to AfriSearch", [
         f"Hi {name or 'there'},",

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import jwt
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from backend import config, db, mailer
 
@@ -16,6 +16,14 @@ class User:
     id: str
     email: str
     name: str
+
+
+@dataclass(frozen=True)
+class Organization:
+    id: str
+    name: str
+    role: str
+    user: User
 
 
 # With AFRISEARCH_AUTH=none everyone is this user.
@@ -70,3 +78,24 @@ def current_user(authorization: str | None = Header(default=None)) -> User:
     if db.ensure_user(user.id, user.email, user.name) and config.AUTH_MODE == "supabase":
         mailer.send(mailer.welcome(user.email, user.name))
     return user
+
+
+def current_organization(
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+) -> Organization:
+    """FastAPI dependency: the organization named in X-Organization-Id, or the user's primary one."""
+    if x_organization_id:
+        found = db.get_organization(x_organization_id, user.id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+    else:
+        user_orgs = db.list_user_organizations(user.id)
+        if not user_orgs:
+            name_cand = user.name.strip()
+            org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+            new_org = db.create_organization(org_name, user.id)
+            found = {**new_org, "role": "owner"}
+        else:
+            found = user_orgs[0]
+    return Organization(id=found["id"], name=found["name"], role=found["role"], user=user)

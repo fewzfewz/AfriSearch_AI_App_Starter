@@ -5,7 +5,10 @@ from request handlers and the indexing thread alike.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -15,6 +18,12 @@ from typing import Any, Iterator
 
 from backend import config
 
+logger = logging.getLogger("afrisearch.db")
+
+SYSTEM_RECOVERY_ORG_ID = "system-recovery-org-000000000000"
+SYSTEM_USER_ID = "system"
+INVITATION_EXPIRY_DAYS = 7
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -23,8 +32,38 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS users_email ON users (lower(email));
+CREATE TABLE IF NOT EXISTS organizations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK (length(trim(name)) >= 1 AND length(name) <= 100),
+    owner_id TEXT NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS organizations_owner ON organizations (owner_id);
+CREATE TABLE IF NOT EXISTS organization_members (
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (organization_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS org_members_user ON organization_members (user_id);
+CREATE TABLE IF NOT EXISTS organization_invitations (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    invited_by TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    UNIQUE (organization_id, email)
+);
+CREATE INDEX IF NOT EXISTS org_invitations_lookup ON organization_invitations (token_hash);
+CREATE INDEX IF NOT EXISTS org_invitations_email ON organization_invitations (email);
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
+    organization_id TEXT REFERENCES organizations (id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -49,7 +88,8 @@ CREATE TABLE IF NOT EXISTS chats (
     user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    shared INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS chats_by_user ON chats (workspace_id, user_id, updated_at);
 CREATE TABLE IF NOT EXISTS messages (
@@ -107,9 +147,134 @@ _init_lock = threading.Lock()
 
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring databases created by earlier versions up to the current schema."""
+    # 1. Existing column migrations
     chat_columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
-    if "shared" not in chat_columns:  # added in 0.3: chats shared read-only with the workspace
+    if chat_columns and "shared" not in chat_columns:  # added in 0.3: chats shared read-only with the workspace
         conn.execute("ALTER TABLE chats ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+
+    # 2. Schema DDL: organizations, organization_members, organization_invitations
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS organizations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK (length(trim(name)) >= 1 AND length(name) <= 100),
+        owner_id TEXT NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS organizations_owner ON organizations (owner_id);")
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS organization_members (
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+        joined_at TEXT NOT NULL,
+        PRIMARY KEY (organization_id, user_id)
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS org_members_user ON organization_members (user_id);")
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS organization_invitations (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        invited_by TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        UNIQUE (organization_id, email)
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS org_invitations_lookup ON organization_invitations (token_hash);")
+    conn.execute("CREATE INDEX IF NOT EXISTS org_invitations_email ON organization_invitations (email);")
+
+    # 3. Add organization_id column to workspaces if missing
+    workspace_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspaces)")}
+    if workspace_columns and "organization_id" not in workspace_columns:
+        conn.execute("ALTER TABLE workspaces ADD COLUMN organization_id TEXT REFERENCES organizations (id) ON DELETE CASCADE")
+    if workspace_columns:
+        conn.execute("CREATE INDEX IF NOT EXISTS workspaces_by_org ON workspaces (organization_id, created_at)")
+
+    # 4. Check for unassigned workspaces
+    unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
+    if not unassigned:
+        return  # Fully migrated
+
+    logger.info("Migrating %d legacy workspaces into organization hierarchy...", len(unassigned))
+    ts = now()
+    report: dict[str, Any] = {
+        "timestamp": ts,
+        "total_unassigned": len(unassigned),
+        "organizations_created": [],
+        "workspaces_mapped": [],
+        "orphaned_recovered": [],
+    }
+
+    # Ensure system user exists for system recovery organization
+    conn.execute(
+        "INSERT OR IGNORE INTO users (id, email, name, created_at) VALUES (?, 'system@localhost', 'System Account', ?)",
+        (SYSTEM_USER_ID, ts),
+    )
+
+    for ws in unassigned:
+        ws_id = ws["id"]
+        # Find the earliest owner in the legacy workspace members table
+        owner_row = conn.execute(
+            "SELECT user_id FROM members WHERE workspace_id = ? AND role = 'owner' ORDER BY added_at LIMIT 1",
+            (ws_id,),
+        ).fetchone()
+
+        if owner_row:
+            owner_id = owner_row["user_id"]
+            # Look up or create Personal Organization for this user
+            org_row = conn.execute(
+                "SELECT id FROM organizations WHERE owner_id = ? AND id != ? ORDER BY created_at LIMIT 1",
+                (owner_id, SYSTEM_RECOVERY_ORG_ID),
+            ).fetchone()
+
+            if org_row:
+                org_id = org_row["id"]
+            else:
+                org_id = new_id()
+                user = conn.execute("SELECT name, email FROM users WHERE id = ?", (owner_id,)).fetchone()
+                name_cand = (user["name"] if user and user["name"] else "").strip()
+                org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+
+                conn.execute(
+                    "INSERT INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (org_id, org_name, owner_id, ts, ts),
+                )
+                conn.execute(
+                    "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                    (org_id, owner_id, ts),
+                )
+                report["organizations_created"].append({"org_id": org_id, "name": org_name, "owner_id": owner_id})
+
+            conn.execute("UPDATE workspaces SET organization_id = ? WHERE id = ?", (org_id, ws_id))
+            report["workspaces_mapped"].append({"workspace_id": ws_id, "organization_id": org_id, "owner_id": owner_id})
+        else:
+            # Orphaned workspace: assign to System Recovery Organization
+            conn.execute(
+                "INSERT OR IGNORE INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (SYSTEM_RECOVERY_ORG_ID, "System Recovery Organization", SYSTEM_USER_ID, ts, ts),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                (SYSTEM_RECOVERY_ORG_ID, SYSTEM_USER_ID, ts),
+            )
+            conn.execute("UPDATE workspaces SET organization_id = ? WHERE id = ?", (SYSTEM_RECOVERY_ORG_ID, ws_id))
+            report["orphaned_recovered"].append({"workspace_id": ws_id, "name": ws["name"], "created_at": ws["created_at"]})
+            logger.warning("Workspace %s (%s) had no owner and was moved to System Recovery Organization.", ws_id, ws["name"])
+
+    try:
+        report_file = config.DATA_DIR / f"migration-report-{int(datetime.now().timestamp())}.json"
+        report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        logger.info("Migration audit report written to %s", report_file)
+    except Exception as exc:
+        logger.error("Could not write migration audit report file: %s", exc)
 
 
 def now() -> str:
@@ -150,28 +315,48 @@ def _row(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
     return item
 
 
-# --- users and workspaces ---------------------------------------------------------
+# --- users and organizations ------------------------------------------------------
 
 def ensure_user(user_id: str, email: str, name: str) -> bool:
     """Create the user on first sight; keep email and name up to date; accept invitations.
 
     Returns True when the user is new.
     """
+    ts = now()
     with connect() as conn:
         new = conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None
         conn.execute(
             "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET email = excluded.email, name = excluded.name",
-            (user_id, email, name, now()),
+            (user_id, email, name, ts),
         )
         if email:
-            # Invitations to this email turn into memberships the first time they sign in.
+            # Legacy workspace invitations to this email turn into memberships on first sign in.
             conn.execute(
                 "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) "
                 "SELECT workspace_id, ?, 'member', ? FROM invitations WHERE email = lower(?)",
-                (user_id, now(), email),
+                (user_id, ts, email),
             )
             conn.execute("DELETE FROM invitations WHERE email = lower(?)", (email,))
+
+        # Ensure every real user has at least one personal organization
+        if user_id != SYSTEM_USER_ID:
+            has_org = conn.execute(
+                "SELECT 1 FROM organizations WHERE owner_id = ? AND id != ?",
+                (user_id, SYSTEM_RECOVERY_ORG_ID),
+            ).fetchone()
+            if not has_org:
+                org_id = new_id()
+                name_cand = name.strip()
+                org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+                conn.execute(
+                    "INSERT INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (org_id, org_name, user_id, ts, ts),
+                )
+                conn.execute(
+                    "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                    (org_id, user_id, ts),
+                )
     return new
 
 
@@ -179,6 +364,259 @@ def get_user(user_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         return _row(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
+
+def find_user_by_email(email: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        return _row(conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (email.strip(),)).fetchone())
+
+
+# --- organizations and memberships --------------------------------------------------
+
+def create_organization(name: str, owner_id: str, org_id: str | None = None) -> dict[str, Any]:
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise ValueError("Organization name must be between 1 and 100 characters")
+    oid = org_id or new_id()
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (oid, name, owner_id, ts, ts),
+        )
+        conn.execute(
+            "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+            (oid, owner_id, ts),
+        )
+    return {"id": oid, "name": name, "owner_id": owner_id, "created_at": ts, "updated_at": ts, "role": "owner"}
+
+
+def get_organization(org_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+    if user_id is not None and user_id != SYSTEM_USER_ID and org_id == SYSTEM_RECOVERY_ORG_ID:
+        return None
+    with connect() as conn:
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT o.*, m.role FROM organizations o "
+                "JOIN organization_members m ON m.organization_id = o.id "
+                "WHERE o.id = ? AND m.user_id = ?",
+                (org_id, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM organizations WHERE id = ?", (org_id,)).fetchone()
+        return _row(row)
+
+
+def list_user_organizations(user_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT o.id, o.name, o.owner_id, o.created_at, o.updated_at, m.role, "
+            "(SELECT count(*) FROM organization_members WHERE organization_id = o.id) AS member_count, "
+            "(SELECT count(*) FROM workspaces WHERE organization_id = o.id) AS workspace_count "
+            "FROM organizations o JOIN organization_members m ON m.organization_id = o.id "
+            "WHERE m.user_id = ? AND o.id != ? ORDER BY o.created_at",
+            (user_id, SYSTEM_RECOVERY_ORG_ID),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def rename_organization(org_id: str, name: str) -> None:
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise ValueError("Organization name must be between 1 and 100 characters")
+    with connect() as conn:
+        conn.execute("UPDATE organizations SET name = ?, updated_at = ? WHERE id = ?", (name, now(), org_id))
+
+
+def transfer_organization_ownership(org_id: str, current_owner_id: str, new_owner_id: str) -> None:
+    if current_owner_id == new_owner_id:
+        return
+    with connect() as conn:
+        row = conn.execute("SELECT owner_id FROM organizations WHERE id = ?", (org_id,)).fetchone()
+        if not row or row["owner_id"] != current_owner_id:
+            raise ValueError("Unauthorized: only the current owner can transfer ownership")
+        target_member = conn.execute(
+            "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
+            (org_id, new_owner_id),
+        ).fetchone()
+        if not target_member:
+            raise ValueError("Target user must be a member of the organization")
+        ts = now()
+        conn.execute("UPDATE organizations SET owner_id = ?, updated_at = ? WHERE id = ?", (new_owner_id, ts, org_id))
+        conn.execute(
+            "UPDATE organization_members SET role = 'admin' WHERE organization_id = ? AND user_id = ?",
+            (org_id, current_owner_id),
+        )
+        conn.execute(
+            "UPDATE organization_members SET role = 'owner' WHERE organization_id = ? AND user_id = ?",
+            (org_id, new_owner_id),
+        )
+
+
+def delete_organization(org_id: str, user_id: str) -> None:
+    with connect() as conn:
+        row = conn.execute("SELECT owner_id FROM organizations WHERE id = ?", (org_id,)).fetchone()
+        if not row:
+            raise ValueError("Organization not found")
+        if row["owner_id"] != user_id:
+            raise PermissionError("Only the organization owner can delete the organization")
+        count = conn.execute(
+            "SELECT count(*) as count FROM organization_members WHERE organization_id = ?",
+            (org_id,),
+        ).fetchone()["count"]
+        if count > 1:
+            raise ValueError("Cannot delete organization with multiple members. Transfer ownership or remove other members first.")
+        conn.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
+
+
+def list_organization_members(org_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT u.id, u.email, u.name, m.role, m.joined_at FROM organization_members m "
+            "JOIN users u ON u.id = m.user_id WHERE m.organization_id = ? "
+            "ORDER BY CASE m.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, m.joined_at",
+            (org_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_organization_member(org_id: str, user_id: str, role: str = "member") -> None:
+    if role not in ("owner", "admin", "member"):
+        raise ValueError("Invalid role")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (organization_id, user_id) DO UPDATE SET role = excluded.role",
+            (org_id, user_id, role, now()),
+        )
+
+
+def remove_organization_member(org_id: str, user_id: str) -> None:
+    with connect() as conn:
+        row = conn.execute("SELECT owner_id FROM organizations WHERE id = ?", (org_id,)).fetchone()
+        if row and row["owner_id"] == user_id:
+            raise ValueError("Cannot remove organization owner")
+        conn.execute(
+            "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ? AND role != 'owner'",
+            (org_id, user_id),
+        )
+
+
+# --- organization invitations -------------------------------------------------------
+
+def create_organization_invitation(
+    org_id: str,
+    email: str,
+    role: str,
+    invited_by: str,
+    expires_days: int = INVITATION_EXPIRY_DAYS,
+) -> tuple[dict[str, Any], str]:
+    clean_email = email.strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise ValueError("Invalid email address")
+    if role not in ("admin", "member"):
+        raise ValueError("Invitation role must be admin or member")
+    with connect() as conn:
+        is_member = conn.execute(
+            "SELECT 1 FROM organization_members om JOIN users u ON u.id = om.user_id "
+            "WHERE om.organization_id = ? AND lower(u.email) = ?",
+            (org_id, clean_email),
+        ).fetchone()
+        if is_member:
+            raise ValueError("User is already a member of this organization")
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        inv_id = new_id()
+        created = now()
+        expires = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO organization_invitations (id, organization_id, email, role, token_hash, expires_at, invited_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (organization_id, email) DO UPDATE SET "
+            "token_hash = excluded.token_hash, role = excluded.role, expires_at = excluded.expires_at, "
+            "invited_by = excluded.invited_by, created_at = excluded.created_at",
+            (inv_id, org_id, clean_email, role, token_hash, expires, invited_by, created),
+        )
+    return (
+        {
+            "id": inv_id,
+            "organization_id": org_id,
+            "email": clean_email,
+            "role": role,
+            "expires_at": expires,
+            "invited_by": invited_by,
+            "created_at": created,
+        },
+        raw_token,
+    )
+
+
+def list_organization_invitations(org_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, organization_id, email, role, expires_at, invited_by, created_at "
+            "FROM organization_invitations WHERE organization_id = ? ORDER BY created_at DESC",
+            (org_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def cancel_organization_invitation(org_id: str, email: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM organization_invitations WHERE organization_id = ? AND email = lower(?)",
+            (org_id, email.strip()),
+        )
+
+
+def get_invitation_by_token(raw_token: str) -> dict[str, Any] | None:
+    token_hash = hashlib.sha256(raw_token.strip().encode("utf-8")).hexdigest()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT i.id, i.organization_id, i.email, i.role, i.expires_at, i.invited_by, i.created_at, "
+            "o.name AS organization_name "
+            "FROM organization_invitations i JOIN organizations o ON o.id = i.organization_id "
+            "WHERE i.token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        return _row(row)
+
+
+def accept_organization_invitation(raw_token: str, user_id: str, user_email: str) -> dict[str, Any]:
+    token_hash = hashlib.sha256(raw_token.strip().encode("utf-8")).hexdigest()
+    clean_user_email = user_email.strip().lower()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM organization_invitations WHERE token_hash = ?", (token_hash,)).fetchone()
+        if not row:
+            raise ValueError("Invalid invitation token")
+        invite = dict(row)
+        if now() > invite["expires_at"]:
+            conn.execute("DELETE FROM organization_invitations WHERE id = ?", (invite["id"],))
+            raise ValueError("Invitation has expired")
+        if clean_user_email != invite["email"].lower():
+            raise ValueError(f"Invitation was sent to {invite['email']}, but current user is {clean_user_email}")
+        ts = now()
+        conn.execute(
+            "INSERT OR IGNORE INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+            (invite["organization_id"], user_id, invite["role"], ts),
+        )
+        conn.execute("DELETE FROM organization_invitations WHERE id = ?", (invite["id"],))
+        return {"organization_id": invite["organization_id"], "role": invite["role"]}
+
+
+def recover_workspace(workspace_id: str, target_org_id: str) -> None:
+    """Move an orphaned workspace from the system recovery organization to a target organization."""
+    with connect() as conn:
+        target = conn.execute("SELECT id FROM organizations WHERE id = ?", (target_org_id,)).fetchone()
+        if not target:
+            raise ValueError(f"Target organization {target_org_id} does not exist")
+        ws = conn.execute("SELECT id, organization_id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        if not ws:
+            raise ValueError(f"Workspace {workspace_id} does not exist")
+        conn.execute("UPDATE workspaces SET organization_id = ? WHERE id = ?", (target_org_id, workspace_id))
+        logger.info("Recovered workspace %s into organization %s", workspace_id, target_org_id)
+
+
+# --- workspaces and legacy invitations ----------------------------------------------
 
 def invite(workspace_id: str, email: str, invited_by: str) -> None:
     with connect() as conn:
@@ -198,39 +636,105 @@ def cancel_invitation(workspace_id: str, email: str) -> None:
         conn.execute("DELETE FROM invitations WHERE workspace_id = ? AND email = lower(?)", (workspace_id, email))
 
 
-def find_user_by_email(email: str) -> dict[str, Any] | None:
+def create_workspace(
+    name: str,
+    owner_id: str,
+    workspace_id: str | None = None,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
+    ws_id = workspace_id or new_id()
+    created = now()
     with connect() as conn:
-        return _row(conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (email.strip(),)).fetchone())
-
-
-def create_workspace(name: str, owner_id: str, workspace_id: str | None = None) -> dict[str, Any]:
-    workspace = {"id": workspace_id or new_id(), "name": name, "created_at": now()}
-    with connect() as conn:
-        conn.execute("INSERT INTO workspaces (id, name, created_at) VALUES (:id, :name, :created_at)", workspace)
-        conn.execute("INSERT INTO members (workspace_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)",
-                     (workspace["id"], owner_id, now()))
+        if not organization_id:
+            # Look up or provision personal organization for user
+            row = conn.execute(
+                "SELECT id FROM organizations WHERE owner_id = ? AND id != ? ORDER BY created_at LIMIT 1",
+                (owner_id, SYSTEM_RECOVERY_ORG_ID),
+            ).fetchone()
+            if row:
+                organization_id = row["id"]
+            else:
+                row = conn.execute(
+                    "SELECT organization_id FROM organization_members WHERE user_id = ? AND organization_id != ? ORDER BY joined_at LIMIT 1",
+                    (owner_id, SYSTEM_RECOVERY_ORG_ID),
+                ).fetchone()
+                if row:
+                    organization_id = row["organization_id"]
+                else:
+                    u = conn.execute("SELECT name FROM users WHERE id = ?", (owner_id,)).fetchone()
+                    name_cand = (u["name"] if u and u["name"] else "").strip()
+                    org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+                    organization_id = new_id()
+                    conn.execute(
+                        "INSERT INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        (organization_id, org_name, owner_id, created, created),
+                    )
+                    conn.execute(
+                        "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                        (organization_id, owner_id, created),
+                    )
+        workspace = {
+            "id": ws_id,
+            "organization_id": organization_id,
+            "name": name,
+            "created_at": created,
+        }
+        conn.execute(
+            "INSERT INTO workspaces (id, organization_id, name, created_at) VALUES (:id, :organization_id, :name, :created_at)",
+            workspace,
+        )
+        conn.execute(
+            "INSERT INTO members (workspace_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)",
+            (ws_id, owner_id, created),
+        )
     return {**workspace, "role": "owner"}
 
 
-def list_workspaces(user_id: str) -> list[dict[str, Any]]:
+def list_workspaces(user_id: str, organization_id: str | None = None) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT w.id, w.name, w.created_at, m.role, "
-            "(SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count "
-            "FROM workspaces w JOIN members m ON m.workspace_id = w.id WHERE m.user_id = ? ORDER BY w.created_at",
-            (user_id,),
-        ).fetchall()
+        if organization_id:
+            rows = conn.execute(
+                "SELECT w.id, w.organization_id, w.name, w.created_at, coalesce(m.role, om.role) AS role, "
+                "(SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count "
+                "FROM workspaces w "
+                "JOIN organization_members om ON om.organization_id = w.organization_id "
+                "LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id "
+                "WHERE om.user_id = ? AND w.organization_id = ? "
+                "AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin')) "
+                "ORDER BY w.created_at",
+                (user_id, organization_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT w.id, w.organization_id, w.name, w.created_at, m.role, "
+                "(SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count "
+                "FROM workspaces w JOIN members m ON m.workspace_id = w.id "
+                "WHERE m.user_id = ? ORDER BY w.created_at",
+                (user_id,),
+            ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_workspace(workspace_id: str, user_id: str) -> dict[str, Any] | None:
+def get_workspace(workspace_id: str, user_id: str, organization_id: str | None = None) -> dict[str, Any] | None:
     """The workspace with the user's role, or None if the user isn't a member."""
     with connect() as conn:
-        return _row(conn.execute(
-            "SELECT w.id, w.name, w.created_at, m.role FROM workspaces w "
-            "JOIN members m ON m.workspace_id = w.id WHERE w.id = ? AND m.user_id = ?",
-            (workspace_id, user_id),
-        ).fetchone())
+        if organization_id:
+            row = conn.execute(
+                "SELECT w.id, w.organization_id, w.name, w.created_at, coalesce(m.role, om.role) AS role "
+                "FROM workspaces w "
+                "JOIN organization_members om ON om.organization_id = w.organization_id "
+                "LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id "
+                "WHERE w.id = ? AND om.user_id = ? AND w.organization_id = ? "
+                "AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin'))",
+                (workspace_id, user_id, organization_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT w.id, w.organization_id, w.name, w.created_at, m.role FROM workspaces w "
+                "JOIN members m ON m.workspace_id = w.id WHERE w.id = ? AND m.user_id = ?",
+                (workspace_id, user_id),
+            ).fetchone()
+        return _row(row)
 
 
 def rename_workspace(workspace_id: str, name: str) -> None:
@@ -268,7 +772,7 @@ def remove_member(workspace_id: str, user_id: str) -> None:
 
 
 def user_data(user_id: str) -> dict[str, Any]:
-    """Everything stored about a user, for export: account, memberships, chats with messages, ratings."""
+    """Everything stored about a user, for export: account, organizations, memberships, chats, ratings."""
     with connect() as conn:
         user = _row(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
         chats = [dict(row) for row in conn.execute(
@@ -280,16 +784,44 @@ def user_data(user_id: str) -> dict[str, Any]:
     for chat in chats:
         chat["messages"] = [{k: m[k] for k in ("role", "content", "data", "rating", "created_at")}
                             for m in list_messages(chat["id"])]
-    return {"user": user, "workspaces": list_workspaces(user_id), "chats": chats, "feedback": feedback}
+    return {
+        "user": user,
+        "organizations": list_user_organizations(user_id),
+        "workspaces": list_workspaces(user_id),
+        "chats": chats,
+        "feedback": feedback,
+    }
 
 
 def delete_user(user_id: str) -> None:
-    """Remove the user's chats, ratings and memberships everywhere, then the user."""
+    """Remove the user's chats, ratings, memberships, personal organizations, then the user."""
     with connect() as conn:
         conn.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))  # messages go with them
         conn.execute("DELETE FROM feedback WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
         conn.execute("UPDATE usage SET user_id = '' WHERE user_id = ?", (user_id,))  # kept for the workspace's bill
+        # Handle organizations owned by this user
+        owned_orgs = conn.execute("SELECT id FROM organizations WHERE owner_id = ?", (user_id,)).fetchall()
+        for org in owned_orgs:
+            count = conn.execute(
+                "SELECT count(*) AS count FROM organization_members WHERE organization_id = ? AND user_id != ?",
+                (org["id"], user_id),
+            ).fetchone()["count"]
+            if count > 0:
+                raise ValueError(f"Cannot delete user who owns organization {org['id']} with other members. Transfer ownership first.")
+            has_workspaces = conn.execute("SELECT 1 FROM workspaces WHERE organization_id = ?", (org["id"],)).fetchone()
+            if has_workspaces:
+                conn.execute(
+                    "INSERT OR IGNORE INTO users (id, email, name, created_at) VALUES (?, 'system@localhost', 'System Account', ?)",
+                    (SYSTEM_USER_ID, now()),
+                )
+                conn.execute(
+                    "UPDATE organizations SET owner_id = ?, updated_at = ? WHERE id = ?",
+                    (SYSTEM_USER_ID, now(), org["id"]),
+                )
+            else:
+                conn.execute("DELETE FROM organizations WHERE id = ?", (org["id"],))
+        conn.execute("DELETE FROM organization_members WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 

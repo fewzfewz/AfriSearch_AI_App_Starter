@@ -1,6 +1,6 @@
 // The signed-in app: sidebar (workspaces, navigation, chats, account), the page, and ⌘K.
 import {
-  BarChart3, Check, ChevronsUpDown, FolderOpen, LogOut, Menu, MessageSquare, Monitor, Moon, MoreHorizontal,
+  BarChart3, Building2, Check, ChevronsUpDown, FolderOpen, LogOut, Menu, MessageSquare, Monitor, Moon, MoreHorizontal,
   PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, Shield, Sun, Trash2, Upload, Users, X,
 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -97,30 +97,34 @@ function WorkspaceAvatar({ name, className }: { name: string; className?: string
 }
 
 function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
-  const { workspaces, current, switchTo, reload } = useWorkspace();
+  const { organizations, currentOrganization, switchOrganization, workspaces, current, switchTo, reload } = useWorkspace();
   const navigate = useNavigate();
   const toast = useToast();
-  const [creating, setCreating] = useState(false);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [creatingOrg, setCreatingOrg] = useState(false);
+
   return (
     <>
-      <Popover width="w-64" trigger={({ open, toggle }) => (
+      <Popover width="w-72" trigger={({ open, toggle }) => (
         <button
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          aria-label={`Workspace: ${current?.name ?? ""}. Switch workspace`}
-          title={collapsed ? current?.name : undefined}
+          aria-label={`Organization: ${currentOrganization?.name ?? ""}, Workspace: ${current?.name ?? ""}. Switch`}
+          title={collapsed ? `${currentOrganization?.name ?? ""} - ${current?.name ?? ""}` : undefined}
           className={cx(
             "flex w-full items-center gap-2.5 rounded-xl text-left transition",
             collapsed ? "justify-center p-1 hover:bg-ink-200/60 dark:hover:bg-ink-800" : "border border-ink-200/80 bg-white px-2.5 py-2 shadow-soft hover:border-ink-300 dark:border-ink-800 dark:bg-ink-900 dark:shadow-none dark:hover:border-ink-700",
           )}
         >
-          <WorkspaceAvatar name={current?.name ?? ""} className="h-7 w-7" />
+          <WorkspaceAvatar name={current?.name ?? currentOrganization?.name ?? ""} className="h-7 w-7" />
           {!collapsed && (
             <>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-semibold">{current?.name ?? "…"}</span>
-                <span className="block text-xs text-ink-500">{current?.role === "owner" ? "Your workspace" : "Shared with you"}</span>
+                <span className="block truncate text-xs text-ink-500">
+                  {currentOrganization?.name ?? (current?.role === "owner" ? "Your workspace" : "Shared with you")}
+                </span>
               </span>
               <ChevronsUpDown className="h-4 w-4 shrink-0 text-ink-400" />
             </>
@@ -129,7 +133,33 @@ function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
       )}>
         {(close) => (
           <>
-            <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Workspaces</p>
+            {organizations.length > 0 && (
+              <>
+                <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Organizations</p>
+                {organizations.map((org) => (
+                  <MenuItem
+                    key={org.id}
+                    icon={<Building2 className="h-4 w-4 text-ink-500" />}
+                    onClick={() => {
+                      switchOrganization(org.id);
+                      close();
+                      navigate("/app");
+                    }}
+                    hint={org.id === currentOrganization?.id ? <Check className="h-4 w-4 text-brand-700 dark:text-brand-400" /> : undefined}
+                  >
+                    <span className="block truncate">{org.name}</span>
+                  </MenuItem>
+                ))}
+                <MenuItem icon={<Plus className="h-4 w-4" />} onClick={() => { close(); setCreatingOrg(true); }}>
+                  New organization
+                </MenuItem>
+                <div className="my-1.5 border-t border-ink-100 dark:border-ink-800" />
+              </>
+            )}
+
+            <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">
+              Workspaces ({currentOrganization?.name ?? "Current"})
+            </p>
             {workspaces.map((w) => (
               <MenuItem
                 key={w.id}
@@ -145,18 +175,19 @@ function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
               </MenuItem>
             ))}
             <div className="my-1 border-t border-ink-100 dark:border-ink-800" />
-            <MenuItem icon={<Plus className="h-4 w-4" />} onClick={() => { close(); setCreating(true); }}>
+            <MenuItem icon={<Plus className="h-4 w-4" />} onClick={() => { close(); setCreatingWorkspace(true); }}>
               New workspace
             </MenuItem>
           </>
         )}
       </Popover>
+
       <NameDialog
-        open={creating}
+        open={creatingWorkspace}
         title="New workspace"
         initial=""
         confirm="Create"
-        onClose={() => setCreating(false)}
+        onClose={() => setCreatingWorkspace(false)}
         onSave={async (name) => {
           try {
             const created = await api<{ id: string }>("/workspaces", { json: { name } });
@@ -164,6 +195,24 @@ function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
             switchTo(created.id);
             navigate("/app/library");
             toast(`Created “${name}”. Add documents to get started.`);
+          } catch (e) {
+            toast((e as Error).message, "error");
+          }
+        }}
+      />
+
+      <NameDialog
+        open={creatingOrg}
+        title="New organization"
+        initial=""
+        confirm="Create"
+        onClose={() => setCreatingOrg(false)}
+        onSave={async (name) => {
+          try {
+            const created = await api<{ id: string }>("/organizations", { json: { name } });
+            await reload();
+            switchOrganization(created.id);
+            toast(`Created organization “${name}”.`);
           } catch (e) {
             toast((e as Error).message, "error");
           }

@@ -3,11 +3,21 @@ import { readLines } from "./ndjson";
 import type { StreamEvent, UploadResult } from "./types";
 
 let getToken: () => Promise<string | null> = async () => null;
+let organizationId: string | null = null;
 let workspaceId: string | null = null;
 
 /** Called by the auth provider: how to get the current access token. */
 export function setTokenGetter(getter: () => Promise<string | null>) {
   getToken = getter;
+}
+
+/** Called by the organization provider: every request is scoped to this organization. */
+export function setOrganizationId(id: string | null) {
+  organizationId = id;
+}
+
+export function getOrganizationId(): string | null {
+  return organizationId;
 }
 
 /** Called by the workspace provider: every request is scoped to this workspace. */
@@ -28,6 +38,7 @@ export async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   const token = await getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (organizationId) headers["X-Organization-Id"] = organizationId;
   if (workspaceId) headers["X-Workspace-Id"] = workspaceId;
   return headers;
 }
