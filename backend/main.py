@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, config, db, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -513,6 +513,7 @@ def create_organization_invitation(
         raise HTTPException(
             status_code=403, detail="Only organization owners and admins can invite members."
         )
+    entitlements.check_can_add_member(org_id)
     try:
         invitation, raw_token = db.create_organization_invitation(
             org_id, body.email, body.role, user.id
@@ -587,6 +588,47 @@ def accept_organization_invitation(
     }
 
 
+# --- subscriptions, plans & usage ---------------------------------------------------
+
+@api.get("/plans")
+def list_plans():
+    return {"plans": list(entitlements.PLANS.values())}
+
+
+@api.get("/organizations/{org_id}/subscription")
+def get_organization_subscription(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    sub = db.get_organization_subscription(org_id)
+    plan = entitlements.get_plan(sub.get("plan_id", "free"))
+    return {
+        "subscription": sub,
+        "plan": plan,
+    }
+
+
+@api.get("/organizations/{org_id}/usage")
+def get_organization_usage(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    sub = db.get_organization_subscription(org_id)
+    plan = entitlements.get_plan(sub.get("plan_id", "free"))
+    usage = db.get_organization_usage_summary(org_id)
+    return {
+        "usage": usage,
+        "limits": {
+            "max_workspaces": plan["max_workspaces"],
+            "max_seats": plan["max_seats"],
+            "max_storage_bytes": plan["max_storage_bytes"],
+            "max_documents": plan["max_documents"],
+            "max_queries_per_month": plan["max_queries_per_month"],
+        },
+        "plan": plan,
+    }
+
+
 # --- workspace management ----------------------------------------------------------------
 
 @api.get("/workspaces")
@@ -596,6 +638,7 @@ def list_workspaces(org: Organization = Depends(current_organization)):
 
 @api.post("/workspaces", status_code=201)
 def create_workspace(body: NameRequest, org: Organization = Depends(current_organization)):
+    entitlements.check_can_create_workspace(org.id)
     return db.create_workspace(body.name.strip(), org.user.id, organization_id=org.id)
 
 
@@ -688,6 +731,9 @@ async def upload_documents(files: list[UploadFile] = File(...), workspace: Works
             errors.append({"filename": upload.filename or "upload", "error": "File exceeds 15 MB limit."})
         else:
             contents.append((upload.filename or "upload.txt", content))
+    if workspace.organization_id and contents:
+        total_upload_bytes = sum(len(c) for _, c in contents)
+        entitlements.check_can_upload(workspace.organization_id, total_upload_bytes, len(contents))
     saved, rejected = workspace.store.save_uploads(contents)
     return {"saved": saved, "errors": errors + rejected,
             "message": "Upload finished. Index the documents to search new files."}
@@ -867,6 +913,9 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         reason = llm.PROVIDERS[provider].unavailable_reason()
         if reason:
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
+    if workspace.organization_id and provider:
+        prov = llm.PROVIDERS[provider]
+        entitlements.check_can_ask(workspace.organization_id, prov.model, kind=prov.kind)
     chat = None
     if request.chat_id:
         chat = db.get_chat(request.chat_id, workspace.id, workspace.user.id)

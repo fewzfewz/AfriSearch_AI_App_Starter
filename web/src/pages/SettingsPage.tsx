@@ -7,10 +7,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { Badge, Button, Card, ConfirmDialog, PageHeader, cx, useToast } from "../components/ui";
 import { api, downloadFile } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { initials, shortModelName } from "../lib/format";
+import { formatSize, initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
 import { useTheme } from "../lib/theme";
-import type { DocumentsResponse, Member } from "../lib/types";
+import type { DocumentsResponse, Member, OrganizationUsageResponse } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
 
 interface Team {
@@ -95,6 +95,7 @@ export function SettingsPage() {
   const ownedWorkspaces = workspaces.filter((w) => w.role === "owner");
   const members = useApi<Team>(current ? `/workspaces/${current.id}/members` : null);
   const system = useApi<DocumentsResponse>("/documents");
+  const orgUsage = useApi<OrganizationUsageResponse>(currentOrganization ? `/organizations/${currentOrganization.id}/usage` : null);
   const multiUser = config?.auth === "supabase";
 
   const renameOrg = async () => {
@@ -172,35 +173,140 @@ export function SettingsPage() {
         </nav>
         <div className="space-y-5">
         {currentOrganization && (
-          <Section id="organization" description="An organization represents your team or company, and contains your workspaces.">
-            <label htmlFor="org-name" className="text-sm font-medium">Organization name</label>
-            <div className="mt-1.5 flex gap-2">
-              <input
-                id="org-name"
-                value={orgName}
-                maxLength={80}
-                disabled={!isOrgOwner}
-                onChange={(e) => setOrgName(e.target.value)}
-                className={inputClass}
-              />
-              <Button
-                variant="primary"
-                loading={savingOrg}
-                disabled={!isOrgOwner || !orgName.trim() || orgName.trim() === currentOrganization.name}
-                onClick={renameOrg}
-              >
-                Save
-              </Button>
-            </div>
-            {!isOrgOwner && <p className="mt-2 text-xs text-ink-500">Only the organization owner can rename this organization.</p>}
-            <div className="mt-4 flex flex-wrap items-center gap-4 rounded-xl border border-ink-200/80 p-3.5 text-sm dark:border-ink-800">
-              <div className="flex items-center gap-2">
-                <span className="text-ink-500">Role:</span>
-                <Badge tone={isOrgOwner ? "brand" : "gray"}>{currentOrganization.role}</Badge>
+          <Section id="organization" description="An organization represents your team or company, subscription plan, and workspaces.">
+            <div className="space-y-6">
+              <div>
+                <label htmlFor="org-name" className="text-sm font-medium">Organization name</label>
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    id="org-name"
+                    value={orgName}
+                    maxLength={80}
+                    disabled={!isOrgOwner}
+                    onChange={(e) => setOrgName(e.target.value)}
+                    className={inputClass}
+                  />
+                  <Button
+                    variant="primary"
+                    loading={savingOrg}
+                    disabled={!isOrgOwner || !orgName.trim() || orgName.trim() === currentOrganization.name}
+                    onClick={renameOrg}
+                  >
+                    Save
+                  </Button>
+                </div>
+                {!isOrgOwner && <p className="mt-2 text-xs text-ink-500">Only the organization owner can rename this organization.</p>}
               </div>
-              <div className="text-ink-500">
-                Workspaces: <span className="font-medium text-ink-900 dark:text-ink-100">{workspaces.filter((w) => !w.organization_id || w.organization_id === currentOrganization.id).length}</span>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink-200/80 p-4 dark:border-ink-800">
+                <div className="flex items-center gap-3">
+                  <div>
+                    <p className="text-xs text-ink-500">Active Plan</p>
+                    <p className="text-base font-semibold text-ink-900 dark:text-white">
+                      {orgUsage.data?.plan.name ?? "Free Tier"}
+                    </p>
+                  </div>
+                  <Badge tone={orgUsage.data?.plan.id === "free" ? "gray" : "brand"}>
+                    {orgUsage.data?.plan.id?.toUpperCase() ?? "FREE"}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-ink-500">Your role:</span>
+                  <Badge tone={isOrgOwner ? "brand" : "gray"}>{currentOrganization.role}</Badge>
+                </div>
               </div>
+
+              {orgUsage.data && (
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-ink-900 dark:text-white">Usage & Quotas</h3>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-xl border border-ink-200/80 p-3.5 dark:border-ink-800">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-ink-500">Workspaces</span>
+                        <span className="font-medium text-ink-900 dark:text-white">
+                          {orgUsage.data.usage.workspace_count} / {orgUsage.data.limits.max_workspaces > 1000 ? "Unlimited" : orgUsage.data.limits.max_workspaces}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                        <div
+                          className="h-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(100, (orgUsage.data.usage.workspace_count / Math.max(1, orgUsage.data.limits.max_workspaces)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-ink-200/80 p-3.5 dark:border-ink-800">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-ink-500">Team Seats</span>
+                        <span className="font-medium text-ink-900 dark:text-white">
+                          {orgUsage.data.usage.seats_used} / {orgUsage.data.limits.max_seats > 1000 ? "Unlimited" : orgUsage.data.limits.max_seats}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                        <div
+                          className="h-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(100, (orgUsage.data.usage.seats_used / Math.max(1, orgUsage.data.limits.max_seats)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-ink-200/80 p-3.5 dark:border-ink-800">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-ink-500">Storage</span>
+                        <span className="font-medium text-ink-900 dark:text-white">
+                          {formatSize(orgUsage.data.usage.storage_bytes)} / {formatSize(orgUsage.data.limits.max_storage_bytes)}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                        <div
+                          className="h-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(100, (orgUsage.data.usage.storage_bytes / Math.max(1, orgUsage.data.limits.max_storage_bytes)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-ink-200/80 p-3.5 dark:border-ink-800">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-ink-500">Total Documents</span>
+                        <span className="font-medium text-ink-900 dark:text-white">
+                          {orgUsage.data.usage.document_count} / {orgUsage.data.limits.max_documents}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                        <div
+                          className="h-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(100, (orgUsage.data.usage.document_count / Math.max(1, orgUsage.data.limits.max_documents)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-ink-200/80 p-3.5 dark:border-ink-800 sm:col-span-2">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-ink-500">Monthly AI Questions</span>
+                        <span className="font-medium text-ink-900 dark:text-white">
+                          {orgUsage.data.usage.questions_count} / {orgUsage.data.limits.max_queries_per_month}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                        <div
+                          className="h-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(100, (orgUsage.data.usage.questions_count / Math.max(1, orgUsage.data.limits.max_queries_per_month)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </Section>
         )}

@@ -47,6 +47,22 @@ This roadmap provides an ordered, risk-mitigated development plan for AfriSearch
 
 ---
 
+### TASK-SAAS-P0-02: Subscription Plans, Usage Metering & Quotas (COMPLETED)
+- **Status:** Completed & Verified (207/207 Backend tests, 5/5 Vitest, clean Vite build)
+- **Delivered Capabilities:**
+  - Database schema: `subscriptions` and `organization_usage_cycles` tables with transactional migration and auto-backfill of active Free plan.
+  - Commercial subscription tiers: Free, Pro, Business, Enterprise with seat, workspace, storage, document, and monthly query limits.
+  - Server-side entitlement enforcement engine in `backend/entitlements.py`.
+  - HTTP 402/403 pre-flight verification on workspace creation, member invites, file uploads, and AI queries with actionable `X-Upgrade-Required` headers.
+  - REST APIs: `GET /api/plans`, `GET /api/organizations/{id}/subscription`, `GET /api/organizations/{id}/usage`.
+  - Frontend integration: live visual usage progress meters and active plan badge in Organization Settings.
+- **Relevant Files:**
+  - `backend/db.py`, `backend/entitlements.py`, `backend/main.py`
+  - `web/src/lib/types.ts`, `web/src/pages/SettingsPage.tsx`
+  - `tests/test_subscriptions_db.py`, `tests/test_entitlements.py`
+
+---
+
 ### TASK-P0-01: Commit & Stabilize Active "Folders and Tags" Feature
 - **Priority:** P0 (Critical)
 - **Problem Being Solved:** The working directory contains uncommitted changes across 10 files implementing document tagging, bulk tagging, and tag-scoped search. The feature works and passes all tests, but must be cleanly committed to avoid state drift.

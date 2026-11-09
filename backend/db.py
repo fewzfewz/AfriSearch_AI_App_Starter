@@ -61,6 +61,36 @@ CREATE TABLE IF NOT EXISTS organization_invitations (
 );
 CREATE INDEX IF NOT EXISTS org_invitations_lookup ON organization_invitations (token_hash);
 CREATE INDEX IF NOT EXISTS org_invitations_email ON organization_invitations (email);
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL UNIQUE REFERENCES organizations (id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL CHECK (plan_id IN ('free', 'pro', 'business', 'enterprise')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'trialing', 'past_due', 'canceled', 'unpaid')),
+    seats_purchased INTEGER NOT NULL DEFAULT 1,
+    provider TEXT NOT NULL CHECK (provider IN ('none', 'stripe', 'chapa', 'paystack', 'manual')),
+    provider_customer_id TEXT,
+    provider_subscription_id TEXT,
+    current_period_start TEXT NOT NULL,
+    current_period_end TEXT NOT NULL,
+    cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+    canceled_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS subscriptions_provider_sub ON subscriptions (provider_subscription_id);
+CREATE TABLE IF NOT EXISTS organization_usage_cycles (
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    cycle_start TEXT NOT NULL,
+    cycle_end TEXT NOT NULL,
+    questions_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    ai_cost_usd REAL NOT NULL DEFAULT 0.0,
+    ocr_pages_count INTEGER NOT NULL DEFAULT 0,
+    peak_storage_bytes INTEGER NOT NULL DEFAULT 0,
+    peak_documents_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (organization_id, cycle_start)
+);
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     organization_id TEXT REFERENCES organizations (id) ON DELETE CASCADE,
@@ -198,7 +228,58 @@ def migrate(conn: sqlite3.Connection) -> None:
     if workspace_columns:
         conn.execute("CREATE INDEX IF NOT EXISTS workspaces_by_org ON workspaces (organization_id, created_at)")
 
-    # 4. Check for unassigned workspaces
+    # 4. Schema DDL: subscriptions and organization_usage_cycles
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL UNIQUE REFERENCES organizations (id) ON DELETE CASCADE,
+        plan_id TEXT NOT NULL CHECK (plan_id IN ('free', 'pro', 'business', 'enterprise')),
+        status TEXT NOT NULL CHECK (status IN ('active', 'trialing', 'past_due', 'canceled', 'unpaid')),
+        seats_purchased INTEGER NOT NULL DEFAULT 1,
+        provider TEXT NOT NULL CHECK (provider IN ('none', 'stripe', 'chapa', 'paystack', 'manual')),
+        provider_customer_id TEXT,
+        provider_subscription_id TEXT,
+        current_period_start TEXT NOT NULL,
+        current_period_end TEXT NOT NULL,
+        cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+        canceled_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS subscriptions_provider_sub ON subscriptions (provider_subscription_id);")
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS organization_usage_cycles (
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        cycle_start TEXT NOT NULL,
+        cycle_end TEXT NOT NULL,
+        questions_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        ai_cost_usd REAL NOT NULL DEFAULT 0.0,
+        ocr_pages_count INTEGER NOT NULL DEFAULT 0,
+        peak_storage_bytes INTEGER NOT NULL DEFAULT 0,
+        peak_documents_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (organization_id, cycle_start)
+    );
+    """)
+
+    # Backfill subscriptions for existing organizations lacking one
+    ts_now = now()
+    orgs_without_sub = conn.execute(
+        "SELECT id, created_at FROM organizations WHERE id NOT IN (SELECT organization_id FROM subscriptions)"
+    ).fetchall()
+    for org_row in orgs_without_sub:
+        oid = org_row["id"]
+        org_ts = org_row["created_at"] or ts_now
+        conn.execute(
+            "INSERT OR IGNORE INTO subscriptions (id, organization_id, plan_id, status, seats_purchased, provider, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at) "
+            "VALUES (?, ?, 'free', 'active', 1, 'none', ?, '2099-12-31T23:59:59Z', 0, ?, ?)",
+            (new_id(), oid, org_ts, org_ts, org_ts),
+        )
+
+    # 5. Check for unassigned workspaces
     unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
     if not unassigned:
         return  # Fully migrated
@@ -357,6 +438,11 @@ def ensure_user(user_id: str, email: str, name: str) -> bool:
                     "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
                     (org_id, user_id, ts),
                 )
+                conn.execute(
+                    "INSERT INTO subscriptions (id, organization_id, plan_id, status, seats_purchased, provider, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at) "
+                    "VALUES (?, ?, 'free', 'active', 1, 'none', ?, '2099-12-31T23:59:59Z', 0, ?, ?)",
+                    (new_id(), org_id, ts, ts, ts),
+                )
     return new
 
 
@@ -386,6 +472,11 @@ def create_organization(name: str, owner_id: str, org_id: str | None = None) -> 
         conn.execute(
             "INSERT INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
             (oid, owner_id, ts),
+        )
+        conn.execute(
+            "INSERT INTO subscriptions (id, organization_id, plan_id, status, seats_purchased, provider, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at) "
+            "VALUES (?, ?, 'free', 'active', 1, 'none', ?, '2099-12-31T23:59:59Z', 0, ?, ?)",
+            (new_id(), oid, ts, ts, ts),
         )
     return {"id": oid, "name": name, "owner_id": owner_id, "created_at": ts, "updated_at": ts, "role": "owner"}
 
@@ -614,6 +705,133 @@ def recover_workspace(workspace_id: str, target_org_id: str) -> None:
             raise ValueError(f"Workspace {workspace_id} does not exist")
         conn.execute("UPDATE workspaces SET organization_id = ? WHERE id = ?", (target_org_id, workspace_id))
         logger.info("Recovered workspace %s into organization %s", workspace_id, target_org_id)
+
+
+# --- subscriptions and usage --------------------------------------------------------
+
+def get_organization_subscription(org_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM subscriptions WHERE organization_id = ?", (org_id,)).fetchone()
+        if row:
+            return dict(row)
+        # Auto-create free subscription if missing
+        sub_id = new_id()
+        ts = now()
+        conn.execute(
+            "INSERT OR IGNORE INTO subscriptions (id, organization_id, plan_id, status, seats_purchased, provider, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at) "
+            "VALUES (?, ?, 'free', 'active', 1, 'none', ?, '2099-12-31T23:59:59Z', 0, ?, ?)",
+            (sub_id, org_id, ts, ts, ts),
+        )
+        row = conn.execute("SELECT * FROM subscriptions WHERE organization_id = ?", (org_id,)).fetchone()
+        return dict(row) if row else {}
+
+
+def update_organization_subscription(
+    org_id: str,
+    plan_id: str | None = None,
+    status: str | None = None,
+    seats_purchased: int | None = None,
+    provider: str | None = None,
+    provider_customer_id: str | None = None,
+    provider_subscription_id: str | None = None,
+    current_period_start: str | None = None,
+    current_period_end: str | None = None,
+    cancel_at_period_end: bool | None = None,
+) -> dict[str, Any]:
+    ts = now()
+    with connect() as conn:
+        sub = conn.execute("SELECT * FROM subscriptions WHERE organization_id = ?", (org_id,)).fetchone()
+        if not sub:
+            get_organization_subscription(org_id)
+        updates: list[str] = ["updated_at = ?"]
+        params: list[Any] = [ts]
+        if plan_id is not None:
+            updates.append("plan_id = ?")
+            params.append(plan_id)
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if seats_purchased is not None:
+            updates.append("seats_purchased = ?")
+            params.append(seats_purchased)
+        if provider is not None:
+            updates.append("provider = ?")
+            params.append(provider)
+        if provider_customer_id is not None:
+            updates.append("provider_customer_id = ?")
+            params.append(provider_customer_id)
+        if provider_subscription_id is not None:
+            updates.append("provider_subscription_id = ?")
+            params.append(provider_subscription_id)
+        if current_period_start is not None:
+            updates.append("current_period_start = ?")
+            params.append(current_period_start)
+        if current_period_end is not None:
+            updates.append("current_period_end = ?")
+            params.append(current_period_end)
+        if cancel_at_period_end is not None:
+            updates.append("cancel_at_period_end = ?")
+            params.append(1 if cancel_at_period_end else 0)
+        params.append(org_id)
+        conn.execute(f"UPDATE subscriptions SET {', '.join(updates)} WHERE organization_id = ?", params)
+        row = conn.execute("SELECT * FROM subscriptions WHERE organization_id = ?", (org_id,)).fetchone()
+        return dict(row) if row else {}
+
+
+def get_organization_usage_summary(org_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        sub = conn.execute("SELECT * FROM subscriptions WHERE organization_id = ?", (org_id,)).fetchone()
+        cycle_start = sub["current_period_start"] if sub else "1970-01-01T00:00:00Z"
+
+        ws_rows = conn.execute("SELECT id FROM workspaces WHERE organization_id = ?", (org_id,)).fetchall()
+        ws_ids = [row["id"] for row in ws_rows]
+        workspace_count = len(ws_ids)
+
+        member_count_row = conn.execute(
+            "SELECT count(*) FROM organization_members WHERE organization_id = ?", (org_id,)
+        ).fetchone()
+        member_count = member_count_row[0] if member_count_row else 0
+
+        invitation_count_row = conn.execute(
+            "SELECT count(*) FROM organization_invitations WHERE organization_id = ?", (org_id,)
+        ).fetchone()
+        invitation_count = invitation_count_row[0] if invitation_count_row else 0
+
+        usage_row = conn.execute(
+            "SELECT count(*) AS questions_count, "
+            "coalesce(sum(u.input_tokens), 0) AS input_tokens, "
+            "coalesce(sum(u.output_tokens), 0) AS output_tokens, "
+            "coalesce(sum(u.cost_usd), 0.0) AS cost_usd "
+            "FROM usage u JOIN workspaces w ON w.id = u.workspace_id "
+            "WHERE w.organization_id = ? AND u.created_at >= ?",
+            (org_id, cycle_start),
+        ).fetchone()
+
+    total_bytes = 0
+    total_docs = 0
+    try:
+        from backend import store
+        for wid in ws_ids:
+            st = store.get_store(wid)
+            total_bytes += st.bytes_used()
+            total_docs += len(st.uploaded_files())
+    except Exception as e:
+        logger.warning("Error computing workspace storage for org %s: %s", org_id, e)
+
+    return {
+        "organization_id": org_id,
+        "workspace_count": workspace_count,
+        "member_count": member_count,
+        "invitation_count": invitation_count,
+        "seats_used": member_count + invitation_count,
+        "storage_bytes": total_bytes,
+        "document_count": total_docs,
+        "cycle_start": cycle_start,
+        "questions_count": usage_row["questions_count"] if usage_row else 0,
+        "input_tokens": usage_row["input_tokens"] if usage_row else 0,
+        "output_tokens": usage_row["output_tokens"] if usage_row else 0,
+        "cost_usd": round(float(usage_row["cost_usd"]), 6) if usage_row else 0.0,
+    }
 
 
 # --- workspaces and legacy invitations ----------------------------------------------

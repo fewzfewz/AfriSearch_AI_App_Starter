@@ -257,3 +257,63 @@ export interface UsageSummary {
   unpriced_answers: number;
   models: { provider: string; model: string; answers: number; input_tokens: number; output_tokens: number; cost_usd: number | null }[];
 }
+
+export interface Subscription {
+  id: string;
+  organization_id: string;
+  plan_id: string;
+  status: string;
+  seats_purchased: number;
+  provider: string;
+  current_period_start: string;
+  current_period_end: string;
+  cancel_at_period_end: boolean;
+  canceled_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Plan {
+  id: string;
+  name: string;
+  price_usd: number;
+  max_seats: number;
+  max_workspaces: number;
+  max_storage_bytes: number;
+  max_documents: number;
+  max_queries_per_month: number;
+  allowed_models: string[];
+  ocr_enabled: boolean;
+}
+
+export interface OrganizationUsage {
+  organization_id: string;
+  workspace_count: number;
+  member_count: number;
+  invitation_count: number;
+  seats_used: number;
+  storage_bytes: number;
+  document_count: number;
+  cycle_start: string;
+  questions_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+export interface SubscriptionResponse {
+  subscription: Subscription;
+  plan: Plan;
+}
+
+export interface OrganizationUsageResponse {
+  usage: OrganizationUsage;
+  limits: {
+    max_workspaces: number;
+    max_seats: number;
+    max_storage_bytes: number;
+    max_documents: number;
+    max_queries_per_month: number;
+  };
+  plan: Plan;
+}
