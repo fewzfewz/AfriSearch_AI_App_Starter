@@ -58,12 +58,14 @@ export function SettingsPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const isOwner = current?.role === "owner";
+  const isWsAdmin = current?.role === "owner" || current?.role === "admin";
   const isOrgOwner = currentOrganization?.role === "owner" || currentOrganization?.owner_id === user?.id;
   const [name, setName] = useState(current?.name ?? "");
   const [orgName, setOrgName] = useState(currentOrganization?.name ?? "");
   const [saving, setSaving] = useState(false);
   const [savingOrg, setSavingOrg] = useState(false);
   const [email, setEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"admin" | "member" | "viewer">("member");
   const [inviting, setInviting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmName, setConfirmName] = useState("");
@@ -128,7 +130,9 @@ export function SettingsPage() {
   const invite = async () => {
     setInviting(true);
     try {
-      const result = await api<Team & { message: string }>(`/workspaces/${current!.id}/members`, { json: { email: email.trim() } });
+      const result = await api<Team & { message: string }>(`/workspaces/${current!.id}/members`, {
+        json: { email: email.trim(), role: inviteRole },
+      });
       members.setData(result);
       setEmail("");
       toast(result.message);
@@ -136,6 +140,19 @@ export function SettingsPage() {
       toast((e as Error).message, "error");
     } finally {
       setInviting(false);
+    }
+  };
+
+  const updateMemberRole = async (member: Member, role: "admin" | "member" | "viewer") => {
+    try {
+      const result = await api<Team>(`/workspaces/${current!.id}/members/${member.id}`, {
+        method: "PATCH",
+        json: { role },
+      });
+      members.setData(result);
+      toast(`Updated ${member.name || member.email} to ${role}`);
+    } catch (e) {
+      toast((e as Error).message, "error");
     }
   };
 
@@ -329,8 +346,22 @@ export function SettingsPage() {
                   <p className="truncate text-sm font-medium">{member.name}{member.id === user?.id && <span className="text-ink-400"> (you)</span>}</p>
                   <p className="truncate text-xs text-ink-500">{member.email || "local user"}</p>
                 </div>
-                <Badge tone={member.role === "owner" ? "brand" : "gray"}>{member.role}</Badge>
-                {member.role !== "owner" && (isOwner || member.id === user?.id) && (
+                {member.role === "owner" ? (
+                  <Badge tone="brand">owner</Badge>
+                ) : isWsAdmin && member.id !== user?.id ? (
+                  <select
+                    value={member.role}
+                    onChange={(e) => updateMemberRole(member, e.target.value as "admin" | "member" | "viewer")}
+                    className="rounded-lg border border-ink-200 bg-white px-2 py-1 text-xs dark:border-ink-700 dark:bg-ink-900"
+                  >
+                    <option value="admin">admin</option>
+                    <option value="member">member</option>
+                    <option value="viewer">viewer</option>
+                  </select>
+                ) : (
+                  <Badge tone={member.role === "admin" ? "brand" : "gray"}>{member.role}</Badge>
+                )}
+                {member.role !== "owner" && (isWsAdmin || member.id === user?.id) && (
                   <Button size="sm" variant="ghost" onClick={() => removeMember(member)}>{member.id === user?.id ? "Leave" : "Remove"}</Button>
                 )}
               </div>
@@ -345,7 +376,7 @@ export function SettingsPage() {
                   <p className="truncate text-xs text-ink-500">Joins when they sign up or sign in with this email</p>
                 </div>
                 <Badge tone="amber">invited</Badge>
-                {isOwner && (
+                {isWsAdmin && (
                   <Button size="sm" variant="ghost" onClick={async () => {
                     const result = await api<Team>(`/workspaces/${current!.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: "DELETE" });
                     members.setData(result);
@@ -354,14 +385,24 @@ export function SettingsPage() {
               </div>
             ))}
           </div>
-          {multiUser && isOwner && (
+          {multiUser && isWsAdmin && (
             <div className="mt-3 flex gap-2">
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="colleague@example.org" aria-label="Email to add"
                 onKeyDown={(e) => e.key === "Enter" && email.includes("@") && invite()} className={inputClass} />
+              <select
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value as "admin" | "member" | "viewer")}
+                className="rounded-xl border border-ink-300 bg-white px-2.5 py-2 text-sm dark:border-ink-700 dark:bg-ink-900"
+                aria-label="Role to assign"
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+                <option value="viewer">Viewer</option>
+              </select>
               <Button icon={<UserPlus className="h-4 w-4" />} loading={inviting} disabled={!email.includes("@")} onClick={invite}>Add</Button>
             </div>
           )}
-          {multiUser && isOwner && (
+          {multiUser && isWsAdmin && (
             <p className="mt-2 text-xs text-ink-500">
               {config?.email
                 ? "People without an account get an invitation email, and join automatically when they sign up with that address."

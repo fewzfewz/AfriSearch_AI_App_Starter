@@ -123,6 +123,11 @@ class ChatUpdate(BaseModel):
 
 class MemberRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
+    role: Literal["admin", "member", "viewer"] = "member"
+
+
+class UpdateMemberRoleRequest(BaseModel):
+    role: Literal["admin", "member", "viewer"]
 
 
 class DocumentTagsRequest(BaseModel):
@@ -269,6 +274,33 @@ def owned_workspace(workspace_id: str, user: User, org: Organization | None = No
     if found["role"] != "owner":
         raise HTTPException(status_code=403, detail="Only the workspace owner can do this.")
     return found
+
+
+ROLE_LEVELS: dict[str, int] = {
+    "owner": 4,
+    "admin": 3,
+    "member": 2,
+    "viewer": 1,
+}
+
+
+def require_workspace_role(workspace: Workspace, min_role: str) -> None:
+    user_level = ROLE_LEVELS.get(workspace.role, 0)
+    required_level = ROLE_LEVELS.get(min_role, 0)
+    if user_level < required_level:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Action requires at least '{min_role}' role in this workspace (you have '{workspace.role}').",
+        )
+
+
+def check_workspace_admin_or_owner(workspace_id: str, user_id: str) -> dict[str, Any]:
+    ws = db.get_workspace(workspace_id, user_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    if ws["role"] not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only workspace owners and admins can perform this action.")
+    return ws
 
 
 # --- general -------------------------------------------------------------------------
@@ -674,14 +706,14 @@ def team(workspace_id: str) -> dict[str, Any]:
 @api.post("/workspaces/{workspace_id}/members", status_code=201)
 def add_member(workspace_id: str, body: MemberRequest, user: User = Depends(current_user)):
     """Add someone by email. People without an account yet are invited: they join on first sign-in."""
-    workspace = owned_workspace(workspace_id, user)
+    workspace = check_workspace_admin_or_owner(workspace_id, user.id)
     email = body.email.strip()
     if "@" not in email:
         raise HTTPException(status_code=422, detail="Enter an email address.")
     invitee = db.find_user_by_email(email)
     if invitee:
-        db.add_member(workspace_id, invitee["id"])
-        message = f"{email} can now use this workspace."
+        db.add_member(workspace_id, invitee["id"], role=body.role)
+        message = f"{email} can now use this workspace as a {body.role}."
     else:
         db.invite(workspace_id, email, user.id)
         message = f"Invitation saved. {email} joins this workspace when they sign up or sign in with that email."
@@ -691,17 +723,29 @@ def add_member(workspace_id: str, body: MemberRequest, user: User = Depends(curr
     return {**team(workspace_id), "message": message}
 
 
+@api.patch("/workspaces/{workspace_id}/members/{member_id}")
+def update_member_role(
+    workspace_id: str, member_id: str, body: UpdateMemberRoleRequest, user: User = Depends(current_user)
+):
+    check_workspace_admin_or_owner(workspace_id, user.id)
+    try:
+        db.update_workspace_member_role(workspace_id, member_id, body.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return team(workspace_id)
+
+
 @api.delete("/workspaces/{workspace_id}/invitations/{email}")
 def cancel_invitation(workspace_id: str, email: str, user: User = Depends(current_user)):
-    owned_workspace(workspace_id, user)
+    check_workspace_admin_or_owner(workspace_id, user.id)
     db.cancel_invitation(workspace_id, email)
     return team(workspace_id)
 
 
 @api.delete("/workspaces/{workspace_id}/members/{member_id}")
 def remove_member(workspace_id: str, member_id: str, user: User = Depends(current_user)):
-    if member_id != user.id:  # members may leave; only owners remove others
-        owned_workspace(workspace_id, user)
+    if member_id != user.id:  # members may leave; only owners and admins remove others
+        check_workspace_admin_or_owner(workspace_id, user.id)
     db.remove_member(workspace_id, member_id)
     return team(workspace_id)
 
@@ -721,6 +765,7 @@ async def read_limited(upload: UploadFile) -> bytes | None:
 
 @api.post("/documents/upload")
 async def upload_documents(files: list[UploadFile] = File(...), workspace: Workspace = Depends(current_workspace)):
+    require_workspace_role(workspace, "admin")
     if len(files) > config.MAX_FILES_PER_UPLOAD:
         raise HTTPException(status_code=400, detail=f"Upload at most {config.MAX_FILES_PER_UPLOAD} files at a time.")
     limits.check(f"upload:{workspace.user.id}", limits.UPLOAD_LIMITS, cost=len(files))
@@ -746,6 +791,7 @@ def index_documents(full: bool = False, wait: bool = True, workspace: Workspace 
     With wait=false the work runs in the background and the job is returned at
     once; follow it with GET /api/jobs/{id}.
     """
+    require_workspace_role(workspace, "admin")
     if not wait:
         return {"job": jobs.start_index_job(workspace.id, workspace.user.id, full)}
     try:
@@ -798,6 +844,7 @@ def list_document_tags(workspace: Workspace = Depends(current_workspace)):
 @api.patch("/documents/{source_id}/tags")
 @api.put("/documents/{source_id}/tags")
 def update_document_tags(source_id: str, body: DocumentTagsRequest, workspace: Workspace = Depends(current_workspace)):
+    require_workspace_role(workspace, "member")
     try:
         updated = workspace.store.set_document_tags(source_id, body.tags)
     except FileNotFoundError as exc:
@@ -831,6 +878,7 @@ async def replace_document(source_id: str, file: UploadFile = File(...), workspa
     Answers that cited the old version keep their quoted passages. Index afterwards
     (as for any upload) to make the new version searchable.
     """
+    require_workspace_role(workspace, "admin")
     try:
         workspace.store.file_path(source_id)
     except FileNotFoundError as exc:
@@ -852,6 +900,7 @@ async def replace_document(source_id: str, file: UploadFile = File(...), workspa
 
 @api.delete("/documents/{source_id}")
 def delete_document(source_id: str, workspace: Workspace = Depends(current_workspace)):
+    require_workspace_role(workspace, "admin")
     try:
         removed = workspace.store.remove(source_id)
     except FileNotFoundError as exc:
@@ -937,6 +986,8 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         alternative = search(with_context)
         if answers.is_covered(alternative):
             sources = alternative
+    if request.save and workspace.role == "viewer":
+        raise HTTPException(status_code=403, detail="Viewers cannot create or save chats in this workspace.")
     if request.save and not chat:
         chat = db.create_chat(workspace.id, workspace.user.id, request.question)
     covered = answers.is_covered(sources)

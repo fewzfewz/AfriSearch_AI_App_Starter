@@ -440,6 +440,8 @@ export function LibraryPage() {
   const toast = useToast();
   const { config } = useAuth();
   const { current } = useWorkspace();
+  const canManage = current?.role === "owner" || current?.role === "admin";
+  const canTag = current?.role !== "viewer";
   const documents = useApi<DocumentsResponse>("/documents");
   const [job, setJob] = useState<Job | null>(null);
   const [upload, setUpload] = useState<{ names: string[]; fraction: number } | null>(null);
@@ -611,8 +613,10 @@ export function LibraryPage() {
       )}
 
       <div className="mt-6 space-y-4">
-        <DropZone onFiles={onFiles} accept={config?.file_types ?? []} maxMb={config?.max_upload_mb ?? 15}
-          disabled={Boolean(upload) || Boolean(active)} compact={Boolean(data?.documents.length)} />
+        {canManage && (
+          <DropZone onFiles={onFiles} accept={config?.file_types ?? []} maxMb={config?.max_upload_mb ?? 15}
+            disabled={Boolean(upload) || Boolean(active)} compact={Boolean(data?.documents.length)} />
+        )}
         {data && !data.ocr.available && (
           <p className="text-xs text-ink-500">
             <ScanText className="mr-1 inline h-3.5 w-3.5" />
@@ -741,8 +745,8 @@ export function LibraryPage() {
               {selected.length > 0 && (
                 <div className="ml-auto flex items-center gap-2">
                   <span className="text-sm text-ink-500">{selected.length} selected</span>
-                  <Button size="sm" variant="secondary" icon={<Tag className="h-3.5 w-3.5" />} onClick={() => setBulkTagging(true)}>Tag selected</Button>
-                  <Button size="sm" variant="danger" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setDeletingSelected(true)}>Delete selected</Button>
+                  {canTag && <Button size="sm" variant="secondary" icon={<Tag className="h-3.5 w-3.5" />} onClick={() => setBulkTagging(true)}>Tag selected</Button>}
+                  {canManage && <Button size="sm" variant="danger" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setDeletingSelected(true)}>Delete selected</Button>}
                   <Button size="sm" variant="ghost" onClick={() => setSelected([])}>Clear</Button>
                 </div>
               )}
@@ -807,10 +811,10 @@ export function LibraryPage() {
                           {(close) => (
                             <>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
-                              <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>
+                              {canTag && <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>}
                               <MenuItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); openDocument(doc.source_id).catch((e: Error) => toast(e.message, "error")); }}>Open original</MenuItem>
-                              <MenuItem icon={<FilePlus2 className="h-4 w-4" />} onClick={() => { close(); setReplacing(doc); replaceInput.current?.click(); }}>Upload new version</MenuItem>
-                              <MenuItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setDeleting(doc); }}>Delete</MenuItem>
+                              {canManage && <MenuItem icon={<FilePlus2 className="h-4 w-4" />} onClick={() => { close(); setReplacing(doc); replaceInput.current?.click(); }}>Upload new version</MenuItem>}
+                              {canManage && <MenuItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setDeleting(doc); }}>Delete</MenuItem>}
                             </>
                           )}
                         </Popover>

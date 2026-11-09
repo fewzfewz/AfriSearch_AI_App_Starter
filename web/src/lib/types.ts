@@ -56,7 +56,7 @@ export interface OrganizationInvitation {
 export interface Workspace {
   id: string;
   name: string;
-  role: "owner" | "member";
+  role: "owner" | "admin" | "member" | "viewer";
   created_at: string;
   organization_id?: string;
   member_count?: number;
@@ -66,7 +66,7 @@ export interface Member {
   id: string;
   email: string;
   name: string;
-  role: "owner" | "member";
+  role: "owner" | "admin" | "member" | "viewer";
   added_at: string;
 }
 

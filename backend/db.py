@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS members (
     workspace_id TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
     added_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, user_id)
 );
@@ -279,7 +279,25 @@ def migrate(conn: sqlite3.Connection) -> None:
             (new_id(), oid, org_ts, org_ts, org_ts),
         )
 
-    # 5. Check for unassigned workspaces
+    # 5. Expand members table role CHECK constraint if needed
+    members_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='members'").fetchone()
+    if members_sql and "viewer" not in members_sql[0]:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS members_new (
+            workspace_id TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, user_id)
+        );
+        """)
+        conn.execute("INSERT OR IGNORE INTO members_new SELECT * FROM members")
+        conn.execute("DROP TABLE members")
+        conn.execute("ALTER TABLE members_new RENAME TO members")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+    # 6. Check for unassigned workspaces
     unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
     if not unassigned:
         return  # Fully migrated
@@ -975,11 +993,32 @@ def list_members(workspace_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def add_member(workspace_id: str, user_id: str) -> None:
+def add_member(workspace_id: str, user_id: str, role: str = "member") -> None:
+    if role not in ("owner", "admin", "member", "viewer"):
+        raise ValueError("Invalid workspace role")
     with connect() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) VALUES (?, ?, 'member', ?)",
-            (workspace_id, user_id, now()),
+            "INSERT INTO members (workspace_id, user_id, role, added_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role",
+            (workspace_id, user_id, role, now()),
+        )
+
+
+def update_workspace_member_role(workspace_id: str, user_id: str, role: str) -> None:
+    if role not in ("admin", "member", "viewer"):
+        raise ValueError("Role must be admin, member, or viewer")
+    with connect() as conn:
+        current = conn.execute(
+            "SELECT role FROM members WHERE workspace_id = ? AND user_id = ?",
+            (workspace_id, user_id),
+        ).fetchone()
+        if not current:
+            raise ValueError("Member not found in workspace")
+        if current["role"] == "owner":
+            raise ValueError("Cannot change role of workspace owner")
+        conn.execute(
+            "UPDATE members SET role = ? WHERE workspace_id = ? AND user_id = ?",
+            (role, workspace_id, user_id),
         )
 
 

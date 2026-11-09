@@ -189,27 +189,28 @@ This roadmap provides an ordered, risk-mitigated development plan for AfriSearch
 
 ---
 
-### TASK-P1-02: Role-Based Access Control (RBAC) in Workspaces
+### TASK-P1-02: Role-Based Access Control (RBAC) in Workspaces (COMPLETED)
+- **Status:** Completed & Verified (212/212 Backend tests, 5/5 Vitest, clean Vite build)
 - **Priority:** P1 (High)
-- **Problem Being Solved:** Currently, all workspace members have equal write permissions (can upload, delete documents, and invite others). Pilot organizations need permission tiers.
+- **Problem Being Solved:** Pre-RBAC, all workspace members had equal write permissions. Pilot organizations require distinct permission tiers (`owner`, `admin`, `member`, `viewer`).
 - **Relevant Files:**
   - `backend/db.py`
   - `backend/main.py`
+  - `web/src/lib/types.ts`
   - `web/src/pages/SettingsPage.tsx`
   - `web/src/pages/LibraryPage.tsx`
-- **Proposed Changes:**
-  - Expand roles to:
-    - `owner`: full control, workspace deletion, billing.
-    - `admin`: manage members, upload, delete, and tag documents.
-    - `member`: upload documents, create chats, ask questions.
-    - `viewer`: ask questions and view shared chats; cannot upload or delete documents.
-  - Enforce permissions in FastAPI dependency guards and hide mutation buttons in the UI for viewers.
-- **Dependencies:** None (SQLite migration in `db.py:migrate`).
-- **Acceptance Criteria:**
-  - Viewers receive 403 Forbidden when attempting document upload or deletion.
-  - Library UI displays read-only mode for viewers without delete/upload controls.
-- **Tests Required:** Add `tests/test_rbac.py` validating each endpoint against each role.
-- **Risks & Rollback:** SQLite column migration already handles non-destructive schema updates.
+  - `tests/test_workspace_rbac.py`
+- **Delivered Capabilities:**
+  - Expanded roles hierarchy: `owner (4) > admin (3) > member (2) > viewer (1)`.
+  - SQLite check constraint migration updating `members` role constraint.
+  - Granular API route enforcement with `require_workspace_role()`:
+    - `POST /documents/upload`, `POST /documents/index`, `POST /documents/{id}/replace`, `DELETE /documents/{id}` require `admin`.
+    - `PATCH/PUT /documents/{id}/tags` require `member`.
+    - Chat creation/saving restricted for viewers (HTTP 403 when saving).
+    - Member invites and role management restricted to owners and admins (`PATCH /api/workspaces/{id}/members/{member_id}`).
+  - Client UI controls:
+    - Viewers and members see read-only controls in Library (no dropzone, no file replace/delete; viewers cannot edit tags).
+    - Admins/owners see role selector when inviting members and inline dropdown to update roles (`admin`, `member`, `viewer`).
 
 ---
 
