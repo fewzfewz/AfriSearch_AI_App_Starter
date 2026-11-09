@@ -58,7 +58,8 @@ def test_office_documents_are_read(tmp_path):
 
     (tmp_path / "prices.xlsx").write_bytes(excel_file())
     text = extract.extract_file(tmp_path / "prices.xlsx")[0][0][1]
-    assert "Sheet: Prices." in text and "Teff | 95." in text and "Empty" not in text
+    assert "Sheet: Prices." in text and "| Teff | 95 |" in text and "Empty" not in text
+    assert "| --- | --- |" in text
 
     (tmp_path / "training.pptx").write_bytes(slides_file())
     pages = extract.extract_file(tmp_path / "training.pptx")[0]
@@ -75,7 +76,38 @@ def test_html_markdown_and_csv(tmp_path):
     (tmp_path / "notes.md").write_text("# Notes\n\n- Boil water for one minute.")
     assert "Boil water" in extract.extract_file(tmp_path / "notes.md")[0][0][1]
     (tmp_path / "data.csv").write_text("crop,price\nteff,95\n")
-    assert "teff,95" in extract.extract_file(tmp_path / "data.csv")[0][0][1]
+    csv_text = extract.extract_file(tmp_path / "data.csv")[0][0][1]
+    assert "| teff | 95 |" in csv_text
+    assert "| --- | --- |" in csv_text
+
+
+def test_markdown_table_chunking_preserves_headers():
+    from backend.text import chunk_document, split_sentences
+
+    # Create a 40-row financial table
+    header = "| Region | Target (M) | Actual (M) | Performance Notes |"
+    sep = "| --- | --- | --- | --- |"
+    rows = [
+        f"| Region {i} | ${10.0 + i}M | ${11.5 + i}M | Met quarterly target with Dr. Smith. |"
+        for i in range(1, 41)
+    ]
+    table_text = "\n".join([header, sep] + rows)
+
+    # 1. Test split_sentences preserves rows containing periods mid-cell
+    sentences = split_sentences(table_text)
+    assert len(sentences) == 42
+    assert sentences[0] == header
+    assert sentences[1] == sep
+    assert sentences[2] == rows[0]  # Not split by "Dr. Smith." or "10.0"
+
+    # 2. Test chunk_document preserves table header across chunks
+    chunks = chunk_document([(1, table_text)], chunk_size=40, overlap=10)
+    assert len(chunks) > 1
+
+    # Every chunk should have the header row and separator at the top
+    for first_p, last_p, chunk_text in chunks:
+        assert header in chunk_text, f"Chunk missing table header:\n{chunk_text}"
+        assert sep in chunk_text, f"Chunk missing table separator:\n{chunk_text}"
 
 
 def test_upload_index_and_search_office_files(client, fake_model):

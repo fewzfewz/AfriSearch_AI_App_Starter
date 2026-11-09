@@ -99,6 +99,27 @@ def html_text(markup: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def format_markdown_table(rows: list[list[str]]) -> list[str]:
+    """Format a matrix of cell values into GitHub-flavored Markdown table rows."""
+    if not rows:
+        return []
+    max_cols = max(len(r) for r in rows)
+    if max_cols == 0:
+        return []
+    padded = [r + [""] * (max_cols - len(r)) for r in rows]
+    cleaned = [[" ".join(cell.replace("|", "/").split()) for cell in r] for r in padded]
+
+    table_lines: list[str] = []
+    # Header row
+    table_lines.append("| " + " | ".join(cleaned[0]) + " |")
+    # Separator row
+    table_lines.append("| " + " | ".join("---" for _ in range(max_cols)) + " |")
+    # Data rows
+    for row in cleaned[1:]:
+        table_lines.append("| " + " | ".join(row) + " |")
+    return table_lines
+
+
 def _office(module: str, package: str):
     try:
         return __import__(module)
@@ -112,11 +133,13 @@ def extract_office(path: Path) -> list[tuple[int | None, str]]:
     if suffix == ".docx":
         docx = _office("docx", "python-docx")
         document = docx.Document(str(path))
-        blocks = [p.text for p in document.paragraphs]
+        blocks = [p.text for p in document.paragraphs if p.text.strip()]
         for table in document.tables:
-            for row in table.rows:
-                blocks.append(" | ".join(cell.text.strip() for cell in row.cells))
-        text = "\n".join(block.strip() for block in blocks if block.strip())
+            table_rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            table_rows = [r for r in table_rows if any(r)]
+            if table_rows:
+                blocks.extend(format_markdown_table(table_rows))
+        text = "\n\n".join(block.strip() for block in blocks if block.strip())
         return [(None, text)] if text else []
     if suffix == ".xlsx":
         openpyxl = _office("openpyxl", "openpyxl")
@@ -124,12 +147,15 @@ def extract_office(path: Path) -> list[tuple[int | None, str]]:
         sheets = []
         try:
             for sheet in workbook.worksheets:
-                rows = [" | ".join("" if v is None else str(v) for v in row).strip(" |")
-                        for row in sheet.iter_rows(values_only=True)]
-                rows = [row for row in rows if row]
+                raw_rows = list(sheet.iter_rows(values_only=True))
+                rows = []
+                for r in raw_rows:
+                    if r and any(v is not None and str(v).strip() != "" for v in r):
+                        rows.append([("" if v is None else str(v).strip()) for v in r])
                 if rows:
-                    # Each row ends like a sentence, so chunks break between rows.
-                    sheets.append(f"Sheet: {sheet.title}.\n" + "\n".join(f"{row}." for row in rows))
+                    table_lines = format_markdown_table(rows)
+                    sheet_text = f"Sheet: {sheet.title}.\n" + "\n".join(table_lines)
+                    sheets.append(sheet_text)
         finally:
             workbook.close()
         text = "\n\n".join(sheets)
@@ -163,6 +189,14 @@ def extract_file(
         text = path.read_text(encoding="utf-8", errors="replace").strip()
         if suffix in (".html", ".htm"):
             text = html_text(text)
+        elif suffix == ".csv":
+            import csv
+            import io
+            reader = csv.reader(io.StringIO(text))
+            csv_rows = [[cell.strip() for cell in r] for r in reader]
+            csv_rows = [r for r in csv_rows if any(r)]
+            if csv_rows:
+                text = "\n".join(format_markdown_table(csv_rows))
         return ([(None, text)] if text else []), set()
     if suffix in config.OFFICE_EXTENSIONS:
         return extract_office(path), set()
