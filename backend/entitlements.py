@@ -10,6 +10,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "id": "free",
         "name": "Free Tier",
         "price_usd": 0,
+        "price_etb": 0,
         "max_seats": 5,
         "max_workspaces": 3,
         "max_storage_bytes": 100 * 1024 * 1024,  # 100 MB
@@ -29,6 +30,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "id": "pro",
         "name": "Pro Tier",
         "price_usd": 29,
+        "price_etb": 3500,
         "max_seats": 15,
         "max_workspaces": 10,
         "max_storage_bytes": 10 * 1024 * 1024 * 1024,  # 10 GB
@@ -51,6 +53,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "id": "business",
         "name": "Business Tier",
         "price_usd": 149,
+        "price_etb": 18000,
         "max_seats": 50,
         "max_workspaces": 999999,
         "max_storage_bytes": 100 * 1024 * 1024 * 1024,  # 100 GB
@@ -63,6 +66,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "id": "enterprise",
         "name": "Enterprise Tier",
         "price_usd": 500,
+        "price_etb": 60000,
         "max_seats": 999999,
         "max_workspaces": 999999,
         "max_storage_bytes": 1024 * 1024 * 1024 * 1024,  # 1 TB

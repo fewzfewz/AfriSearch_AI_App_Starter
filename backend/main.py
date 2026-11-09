@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, billing, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -659,6 +659,102 @@ def get_organization_usage(org_id: str, user: User = Depends(current_user)):
         },
         "plan": plan,
     }
+
+
+class CheckoutRequest(BaseModel):
+    plan_id: str
+    seats: int = 1
+    provider: str = "stripe"
+    currency: str | None = None
+    return_url: str | None = None
+
+
+@api.post("/organizations/{org_id}/checkout")
+def create_checkout_session(
+    org_id: str,
+    req: CheckoutRequest,
+    user: User = Depends(current_user),
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only the organization owner can manage subscriptions and purchases.")
+    try:
+        session = billing.create_checkout_session(
+            organization_id=org_id,
+            organization_name=org["name"],
+            plan_id=req.plan_id,
+            seats=req.seats,
+            provider=req.provider,
+            user_email=user.email,
+            user_name=user.name,
+            return_url=req.return_url,
+            currency=req.currency,
+        )
+        return session
+    except Exception as e:
+        logger.exception("Checkout session creation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/organizations/{org_id}/billing-portal")
+def create_billing_portal_session(
+    org_id: str,
+    user: User = Depends(current_user),
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only the organization owner can access the billing portal.")
+    try:
+        return billing.create_portal_session(org_id)
+    except Exception as e:
+        logger.exception("Billing portal session failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/organizations/{org_id}/invoices")
+def list_organization_invoices(
+    org_id: str,
+    user: User = Depends(current_user),
+):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    invoices = billing.list_invoices(org_id)
+    return {"invoices": invoices}
+
+
+@api.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    raw_body = await request.body()
+    headers = dict(request.headers)
+    try:
+        result = billing.handle_webhook("stripe", raw_body, headers)
+        return JSONResponse(status_code=200, content=result)
+    except ValueError as e:
+        logger.warning("Stripe webhook verification or validation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Stripe webhook handling failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error handling webhook")
+
+
+@api.post("/webhooks/chapa")
+async def chapa_webhook(request: Request):
+    raw_body = await request.body()
+    headers = dict(request.headers)
+    try:
+        result = billing.handle_webhook("chapa", raw_body, headers)
+        return JSONResponse(status_code=200, content=result)
+    except ValueError as e:
+        logger.warning("Chapa webhook verification or validation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Chapa webhook handling failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error handling webhook")
 
 
 # --- workspace management ----------------------------------------------------------------

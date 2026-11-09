@@ -1,6 +1,6 @@
 // Workspace, team, appearance and account settings.
 import {
-  AlertTriangle, Building2, Download, FolderOpen, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
+  AlertTriangle, Building2, CreditCard, Download, FolderOpen, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -10,7 +10,7 @@ import { useAuth } from "../lib/auth";
 import { formatSize, initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
 import { useTheme } from "../lib/theme";
-import type { DocumentsResponse, Member, OrganizationUsageResponse } from "../lib/types";
+import type { CheckoutResponse, DocumentsResponse, InvoicesResponse, Member, OrganizationUsageResponse } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
 
 interface Team {
@@ -98,6 +98,59 @@ export function SettingsPage() {
   const members = useApi<Team>(current ? `/workspaces/${current.id}/members` : null);
   const system = useApi<DocumentsResponse>("/documents");
   const orgUsage = useApi<OrganizationUsageResponse>(currentOrganization ? `/organizations/${currentOrganization.id}/usage` : null);
+  const invoices = useApi<InvoicesResponse>(currentOrganization ? `/organizations/${currentOrganization.id}/invoices` : null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<"pro" | "business">("pro");
+  const [selectedProvider, setSelectedProvider] = useState<"stripe" | "chapa">("stripe");
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [portalLoading, setPortalLoading] = useState(false);
+
+  const handleCheckout = async () => {
+    if (!currentOrganization) return;
+    setCheckingOut(true);
+    try {
+      const res = await api<CheckoutResponse>(`/organizations/${currentOrganization.id}/checkout`, {
+        method: "POST",
+        json: {
+          plan_id: selectedPlan,
+          provider: selectedProvider,
+          currency: selectedProvider === "chapa" ? "ETB" : "USD",
+          seats: 1,
+        },
+      });
+      if (res.checkout_url) {
+        if (res.is_mock) {
+          toast(`Simulation checkout completed for ${selectedPlan.toUpperCase()} plan.`);
+          setUpgradeOpen(false);
+          orgUsage.reload();
+          invoices.reload();
+        } else {
+          window.location.href = res.checkout_url;
+        }
+      }
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setCheckingOut(false);
+    }
+  };
+
+  const handlePortal = async () => {
+    if (!currentOrganization) return;
+    setPortalLoading(true);
+    try {
+      const res = await api<{ portal_url: string }>(`/organizations/${currentOrganization.id}/billing-portal`, {
+        method: "POST",
+      });
+      if (res.portal_url) {
+        window.location.href = res.portal_url;
+      }
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setPortalLoading(false);
+    }
+  };
   const multiUser = config?.auth === "supabase";
 
   const renameOrg = async () => {
@@ -227,11 +280,136 @@ export function SettingsPage() {
                     {orgUsage.data?.plan.id?.toUpperCase() ?? "FREE"}
                   </Badge>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-ink-500">Your role:</span>
-                  <Badge tone={isOrgOwner ? "brand" : "gray"}>{currentOrganization.role}</Badge>
+                <div className="flex items-center gap-3">
+                  {isOrgOwner && (
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="primary" onClick={() => setUpgradeOpen((v) => !v)}>
+                        <CreditCard className="mr-1.5 h-3.5 w-3.5" />
+                        {orgUsage.data?.plan.id === "free" ? "Upgrade Plan" : "Change Plan"}
+                      </Button>
+                      {orgUsage.data?.plan.id !== "free" && (
+                        <Button size="sm" variant="ghost" loading={portalLoading} onClick={handlePortal}>
+                          Billing Portal
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-ink-500">Your role:</span>
+                    <Badge tone={isOrgOwner ? "brand" : "gray"}>{currentOrganization.role}</Badge>
+                  </div>
                 </div>
               </div>
+
+              {upgradeOpen && (
+                <div className="rounded-xl border border-brand-500/30 bg-brand-50/50 p-4 dark:border-brand-500/20 dark:bg-brand-950/20">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className="flex items-center gap-1.5 text-sm font-semibold text-ink-900 dark:text-white">
+                      <CreditCard className="h-4 w-4 text-brand-600" />
+                      Select Plan & Payment Gateway
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setUpgradeOpen(false)}
+                      className="text-xs text-ink-400 hover:text-ink-600 dark:hover:text-ink-200"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+
+                  <div className="mb-4 grid gap-3 sm:grid-cols-2">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedPlan("pro")}
+                      onKeyDown={(e) => e.key === "Enter" && setSelectedPlan("pro")}
+                      className={cx(
+                        "cursor-pointer rounded-xl border p-3 transition-all",
+                        selectedPlan === "pro"
+                          ? "border-brand-500 bg-white shadow-sm dark:bg-ink-900"
+                          : "border-ink-200 bg-white/60 hover:border-ink-300 dark:border-ink-800 dark:bg-ink-900/60"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-ink-900 dark:text-white">Pro Tier</span>
+                        <span className="text-sm font-bold text-brand-600 dark:text-brand-400">
+                          {selectedProvider === "chapa" ? "3,500 ETB / mo" : "$29 / mo"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-ink-500">
+                        10 Workspaces, 15 Seats, 10 GB Storage, 1,500 monthly queries, Claude 3.5 & GPT-4o models.
+                      </p>
+                    </div>
+
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedPlan("business")}
+                      onKeyDown={(e) => e.key === "Enter" && setSelectedPlan("business")}
+                      className={cx(
+                        "cursor-pointer rounded-xl border p-3 transition-all",
+                        selectedPlan === "business"
+                          ? "border-brand-500 bg-white shadow-sm dark:bg-ink-900"
+                          : "border-ink-200 bg-white/60 hover:border-ink-300 dark:border-ink-800 dark:bg-ink-900/60"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-ink-900 dark:text-white">Business Tier</span>
+                        <span className="text-sm font-bold text-brand-600 dark:text-brand-400">
+                          {selectedProvider === "chapa" ? "18,000 ETB / mo" : "$149 / mo"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-ink-500">
+                        Unlimited Workspaces, 50 Seats, 100 GB Storage, 10,000 monthly queries, all premium AI models.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="mb-1.5 block text-xs font-medium text-ink-600 dark:text-ink-300">
+                      Payment Rail
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProvider("stripe")}
+                        className={cx(
+                          "rounded-lg border px-3 py-2 text-left text-xs font-medium transition-all",
+                          selectedProvider === "stripe"
+                            ? "border-brand-500 bg-brand-500 text-white"
+                            : "border-ink-300 bg-white text-ink-700 hover:bg-ink-50 dark:border-ink-700 dark:bg-ink-900 dark:text-ink-200"
+                        )}
+                      >
+                        <p className="font-semibold">Credit Card / Global</p>
+                        <p className="opacity-80">Stripe (USD)</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProvider("chapa")}
+                        className={cx(
+                          "rounded-lg border px-3 py-2 text-left text-xs font-medium transition-all",
+                          selectedProvider === "chapa"
+                            ? "border-brand-500 bg-brand-500 text-white"
+                            : "border-ink-300 bg-white text-ink-700 hover:bg-ink-50 dark:border-ink-700 dark:bg-ink-900 dark:text-ink-200"
+                        )}
+                      >
+                        <p className="font-semibold">African Rails / Ethiopia</p>
+                        <p className="opacity-80">Telebirr, CBE Birr (Chapa ETB)</p>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setUpgradeOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button variant="primary" size="sm" loading={checkingOut} onClick={handleCheckout}>
+                      Checkout with {selectedProvider === "stripe" ? "Stripe" : "Chapa"}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {orgUsage.data && (
                 <div className="space-y-3">
@@ -321,6 +499,39 @@ export function SettingsPage() {
                         />
                       </div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {invoices.data?.invoices && invoices.data.invoices.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-500">Billing History & Invoices</h4>
+                  <div className="divide-y divide-ink-100 overflow-hidden rounded-xl border border-ink-200/80 dark:divide-ink-800 dark:border-ink-800">
+                    {invoices.data.invoices.map((inv) => (
+                      <div key={inv.id} className="flex items-center justify-between px-4 py-2.5 text-xs">
+                        <div>
+                          <p className="font-medium text-ink-900 dark:text-white">
+                            {inv.currency} {(inv.amount_cents / 100).toFixed(2)}
+                          </p>
+                          <p className="text-[11px] text-ink-500">
+                            {new Date(inv.created_at).toLocaleDateString()} • {inv.provider.toUpperCase()}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge tone={inv.status === "paid" ? "green" : "gray"}>{inv.status}</Badge>
+                          {(inv.hosted_invoice_url || inv.pdf_url) && (
+                            <a
+                              href={inv.hosted_invoice_url || inv.pdf_url || "#"}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand-600 hover:underline"
+                            >
+                              Download
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

@@ -277,6 +277,7 @@ export interface Plan {
   id: string;
   name: string;
   price_usd: number;
+  price_etb?: number;
   max_seats: number;
   max_workspaces: number;
   max_storage_bytes: number;
@@ -284,6 +285,31 @@ export interface Plan {
   max_queries_per_month: number;
   allowed_models: string[];
   ocr_enabled: boolean;
+}
+
+export interface Invoice {
+  id: string;
+  organization_id: string;
+  subscription_id?: string | null;
+  provider: "stripe" | "chapa" | "paystack" | "manual";
+  provider_invoice_id?: string | null;
+  amount_cents: number;
+  currency: string;
+  status: "paid" | "open" | "void" | "uncollectible";
+  paid_at?: string | null;
+  hosted_invoice_url?: string | null;
+  pdf_url?: string | null;
+  created_at: string;
+}
+
+export interface InvoicesResponse {
+  invoices: Invoice[];
+}
+
+export interface CheckoutResponse {
+  checkout_url: string;
+  session_id: string;
+  is_mock?: boolean;
 }
 
 export interface OrganizationUsage {

@@ -63,6 +63,24 @@ This roadmap provides an ordered, risk-mitigated development plan for AfriSearch
 
 ---
 
+### TASK-SAAS-P1-02: Payment Gateways & Invoicing Integration (Stripe & Chapa) (COMPLETED)
+- **Status:** Completed & Verified (217/217 Backend tests, 5/5 Vitest, clean Vite build)
+- **Delivered Capabilities:**
+  - Database schema: `invoices` table and `webhook_events` idempotency journal table with transactional SQLite migrations.
+  - Pluggable provider architecture in `backend/billing/` for Stripe (Global Credit Cards) and Chapa (Ethiopian Rails: Telebirr, CBE Birr in ETB).
+  - Secure webhook ingestion pipeline with cryptographic HMAC signature verification (Stripe and Chapa).
+  - Webhook event idempotency handling to prevent duplicate subscription state updates or duplicate invoice records.
+  - Lifecycle management: `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.success`.
+  - REST API suite: `POST /api/organizations/{id}/checkout`, `POST /api/organizations/{id}/billing-portal`, `GET /api/organizations/{id}/invoices`, `POST /api/webhooks/stripe`, `POST /api/webhooks/chapa`.
+  - Web UI: Plan upgrade selector with dual payment rails (Stripe / Chapa) and interactive checkout, customer billing portal launcher, and Invoices ledger in Organization Settings.
+- **Relevant Files:**
+  - `backend/db.py`, `backend/config.py`, `backend/entitlements.py`, `backend/main.py`
+  - `backend/billing/base.py`, `backend/billing/stripe_provider.py`, `backend/billing/chapa_provider.py`, `backend/billing/service.py`, `backend/billing/__init__.py`
+  - `web/src/lib/types.ts`, `web/src/pages/SettingsPage.tsx`
+  - `tests/test_billing.py`
+
+---
+
 ### TASK-P0-01: Commit & Stabilize Active "Folders and Tags" Feature
 - **Priority:** P0 (Critical)
 - **Problem Being Solved:** The working directory contains uncommitted changes across 10 files implementing document tagging, bulk tagging, and tag-scoped search. The feature works and passes all tests, but must be cleanly committed to avoid state drift.

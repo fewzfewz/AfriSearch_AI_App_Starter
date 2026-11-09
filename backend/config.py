@@ -64,3 +64,12 @@ EMAIL_INDEXING_AFTER_SECONDS = float(os.getenv("AFRISEARCH_EMAIL_INDEXING_AFTER"
 
 # Extra sign-in buttons shown by the web app, e.g. "google"; enable them in Supabase too.
 AUTH_PROVIDERS = [p.strip() for p in os.getenv("AFRISEARCH_AUTH_PROVIDERS", "").split(",") if p.strip()]
+
+# Billing & Payment Gateways (Stripe & Chapa)
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+CHAPA_SECRET_KEY = os.getenv("CHAPA_SECRET_KEY", "")
+CHAPA_WEBHOOK_SECRET = os.getenv("CHAPA_WEBHOOK_SECRET", "")
+CHAPA_API_URL = os.getenv("CHAPA_API_URL", "https://api.chapa.co/v1").rstrip("/")
+BILLING_RETURN_URL_BASE = os.getenv("BILLING_RETURN_URL_BASE", APP_URL or "http://localhost:5173").rstrip("/")
+

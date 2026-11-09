@@ -169,6 +169,32 @@ CREATE TABLE IF NOT EXISTS usage (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS usage_by_workspace ON usage (workspace_id, created_at);
+CREATE TABLE IF NOT EXISTS invoices (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    subscription_id TEXT REFERENCES subscriptions (id) ON DELETE SET NULL,
+    provider TEXT NOT NULL CHECK (provider IN ('stripe', 'chapa', 'paystack', 'manual')),
+    provider_invoice_id TEXT,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('paid', 'open', 'void', 'uncollectible')),
+    paid_at TEXT,
+    hosted_invoice_url TEXT,
+    pdf_url TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS invoices_by_org ON invoices (organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS invoices_by_provider ON invoices (provider_invoice_id);
+CREATE TABLE IF NOT EXISTS webhook_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK (provider IN ('stripe', 'chapa', 'paystack')),
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('processed', 'ignored', 'failed')),
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS webhook_events_lookup ON webhook_events (id, provider);
 """
 
 _initialized: set[str] = set()
@@ -297,7 +323,40 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE members_new RENAME TO members")
         conn.execute("PRAGMA foreign_keys = ON")
 
-    # 6. Check for unassigned workspaces
+    # 6. Schema DDL: invoices and webhook_events
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        subscription_id TEXT REFERENCES subscriptions (id) ON DELETE SET NULL,
+        provider TEXT NOT NULL CHECK (provider IN ('stripe', 'chapa', 'paystack', 'manual')),
+        provider_invoice_id TEXT,
+        amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('paid', 'open', 'void', 'uncollectible')),
+        paid_at TEXT,
+        hosted_invoice_url TEXT,
+        pdf_url TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS invoices_by_org ON invoices (organization_id, created_at DESC);")
+    conn.execute("CREATE INDEX IF NOT EXISTS invoices_by_provider ON invoices (provider_invoice_id);")
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS webhook_events (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider IN ('stripe', 'chapa', 'paystack')),
+        event_type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('processed', 'ignored', 'failed')),
+        error TEXT
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS webhook_events_lookup ON webhook_events (id, provider);")
+
+    # 7. Check for unassigned workspaces
     unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
     if not unassigned:
         return  # Fully migrated
@@ -850,6 +909,95 @@ def get_organization_usage_summary(org_id: str) -> dict[str, Any]:
         "output_tokens": usage_row["output_tokens"] if usage_row else 0,
         "cost_usd": round(float(usage_row["cost_usd"]), 6) if usage_row else 0.0,
     }
+
+
+def get_subscription_by_provider_sub_id(provider_subscription_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM subscriptions WHERE provider_subscription_id = ?",
+            (provider_subscription_id.strip(),),
+        ).fetchone()
+        return _row(row)
+
+
+def get_subscription_by_customer_id(provider_customer_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM subscriptions WHERE provider_customer_id = ?",
+            (provider_customer_id.strip(),),
+        ).fetchone()
+        return _row(row)
+
+
+def record_invoice(
+    organization_id: str,
+    provider: str,
+    amount_cents: int,
+    currency: str,
+    status: str,
+    subscription_id: str | None = None,
+    provider_invoice_id: str | None = None,
+    paid_at: str | None = None,
+    hosted_invoice_url: str | None = None,
+    pdf_url: str | None = None,
+    invoice_id: str | None = None,
+) -> dict[str, Any]:
+    inv_id = invoice_id or f"inv_{new_id()}"
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO invoices (id, organization_id, subscription_id, provider, provider_invoice_id, amount_cents, currency, status, paid_at, hosted_invoice_url, pdf_url, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (inv_id, organization_id, subscription_id, provider, provider_invoice_id, amount_cents, currency.upper(), status, paid_at, hosted_invoice_url, pdf_url, ts),
+        )
+        row = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+        return dict(row) if row else {}
+
+
+def get_invoice(invoice_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        return _row(conn.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone())
+
+
+def list_organization_invoices(org_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM invoices WHERE organization_id = ? ORDER BY created_at DESC LIMIT ?",
+            (org_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_webhook_event(
+    event_id: str,
+    provider: str,
+    event_type: str,
+    payload: str | dict[str, Any],
+    status: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        payload_str = json.dumps(payload)
+    else:
+        payload_str = str(payload)
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO webhook_events (id, provider, event_type, payload, processed_at, status, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (event_id, provider, event_type, payload_str, ts, status, error),
+        )
+        row = conn.execute("SELECT * FROM webhook_events WHERE id = ? AND provider = ?", (event_id, provider)).fetchone()
+        return dict(row) if row else {}
+
+
+def is_webhook_event_processed(event_id: str, provider: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM webhook_events WHERE id = ? AND provider = ? AND status = 'processed'",
+            (event_id, provider),
+        ).fetchone()
+        return row is not None
 
 
 # --- workspaces and legacy invitations ----------------------------------------------
