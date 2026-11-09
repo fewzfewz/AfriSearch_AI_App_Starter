@@ -98,3 +98,22 @@ def test_ask_returns_suggested_follow_up_questions(indexed, fake_model):
     assert len(body["suggestions"]) > 0
     assert any("?" in s or "።" in s for s in body["suggestions"])
 
+
+def test_ask_filtering_by_tags(indexed, fake_model):
+    docs = indexed.get("/documents").json()["documents"]
+    guide_id = docs[0]["source_id"]
+
+    # Tag guide.txt as "SolarGuidelines"
+    indexed.patch(f"/documents/{guide_id}/tags", json={"tags": ["SolarGuidelines"]})
+
+    # Search with matching tag
+    res_match = ask(indexed, "How often should solar panels be cleaned?", tags=["SolarGuidelines"])
+    assert res_match.status_code == 200
+    assert res_match.json()["sources"][0]["source_name"] == "guide.txt"
+
+    # Search with non-matching tag should not retrieve guide.txt
+    res_nomatch = ask(indexed, "How often should solar panels be cleaned?", tags=["FinancialReport"])
+    assert res_nomatch.status_code == 200
+    assert res_nomatch.json()["sources"] == []
+
+

@@ -135,3 +135,63 @@ def test_index_survives_a_restart(client, app_env):
     reloaded = DocumentStore(app_env.store.dir)  # as after a server restart
     assert [chunk["chunk_id"] for chunk in reloaded.chunks] == saved
     assert reloaded.embeddings.shape[0] == len(saved)
+
+
+def test_document_tags_management_and_filtering(client, app_env):
+    upload(client, ("guide.txt", SOLAR_GUIDE), ("finance.txt", b"Q3 revenue reached 1 million dollars."))
+    client.post("/documents/index")
+    docs = client.get("/documents").json()["documents"]
+    guide = next(d for d in docs if d["source_name"] == "guide.txt")
+    finance = next(d for d in docs if d["source_name"] == "finance.txt")
+
+    # Initially empty tags
+    assert guide.get("tags") == []
+    assert finance.get("tags") == []
+
+    # Tag guide as Legal and Guidelines
+    res = client.patch(f"/documents/{guide['source_id']}/tags", json={"tags": ["Legal", "Guidelines"]})
+    assert res.status_code == 200
+    assert res.json()["tags"] == ["Legal", "Guidelines"]
+
+    # Tag finance as Financial
+    res2 = client.patch(f"/documents/{finance['source_id']}/tags", json={"tags": ["Financial"]})
+    assert res2.status_code == 200
+    assert res2.json()["tags"] == ["Financial"]
+
+    # Check /documents/tags endpoint
+    tags_res = client.get("/documents/tags").json()
+    assert sorted(tags_res["tags"]) == ["Financial", "Guidelines", "Legal"]
+
+    # List all documents and check tags
+    all_docs_res = client.get("/documents").json()
+    assert all_docs_res["tags"] == ["Financial", "Guidelines", "Legal"]
+    g_doc = next(d for d in all_docs_res["documents"] if d["source_name"] == "guide.txt")
+    assert g_doc["tags"] == ["Legal", "Guidelines"]
+
+    # Filter by tag
+    legal_docs = client.get("/documents?tag=Legal").json()["documents"]
+    assert len(legal_docs) == 1
+    assert legal_docs[0]["source_name"] == "guide.txt"
+
+    fin_docs = client.get("/documents?tag=financial").json()["documents"]
+    assert len(fin_docs) == 1
+    assert fin_docs[0]["source_name"] == "finance.txt"
+
+    empty_docs = client.get("/documents?tag=Nonexistent").json()["documents"]
+    assert len(empty_docs) == 0
+
+    # Replace document preserves tags
+    client.post(
+        f"/documents/{guide['source_id']}/replace",
+        files={"file": ("guide-v2.txt", SOLAR_GUIDE + b"\nUpdated chapter.", "text/plain")},
+    )
+    client.post("/documents/index")
+    updated_docs = client.get("/documents").json()["documents"]
+    replaced_guide = next(d for d in updated_docs if d["source_name"] == "guide-v2.txt")
+    assert replaced_guide["tags"] == ["Legal", "Guidelines"]
+
+    # Delete document cleans up its tags
+    client.delete(f"/documents/{finance['source_id']}")
+    remaining_tags = client.get("/documents/tags").json()["tags"]
+    assert "Financial" not in remaining_tags
+

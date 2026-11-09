@@ -86,6 +86,8 @@ class AskRequest(BaseModel):
     rerank: bool | None = None
     # Only search these documents (source ids from GET /api/documents); all when empty.
     source_ids: list[str] | None = Field(default=None, max_length=200)
+    # Only search documents carrying any of these tags/folders; all when empty.
+    tags: list[str] | None = Field(default=None, max_length=50)
     # Continue this chat (earlier turns help with follow-up questions) and save the turn.
     chat_id: str | None = None
     # Save the question and answer in a new chat when no chat_id is given.
@@ -121,6 +123,10 @@ class ChatUpdate(BaseModel):
 
 class MemberRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
+
+
+class DocumentTagsRequest(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=20)
 
 
 # --- workspaces ----------------------------------------------------------------------
@@ -467,9 +473,14 @@ def get_job(job_id: str, workspace: Workspace = Depends(current_workspace)):
 
 
 @api.get("/documents")
-def list_documents(workspace: Workspace = Depends(current_workspace)):
+def list_documents(tag: str | None = None, workspace: Workspace = Depends(current_workspace)):
     documents, stale = workspace.store.documents()
+    all_tags = workspace.store.all_tags()
+    if tag:
+        tag_lower = tag.strip().lower()
+        documents = [d for d in documents if any(t.lower() == tag_lower for t in d.get("tags", []))]
     return {"documents": documents,
+            "tags": all_tags,
             "indexed_chunks": len(workspace.store.chunks),
             # Documents indexed with another search model or chunking; re-index to search them.
             "stale_documents": stale,
@@ -477,6 +488,21 @@ def list_documents(workspace: Workspace = Depends(current_workspace)):
             "unindexed_files": len(workspace.store.uploaded_files()) - len(documents),
             "storage": {"used_bytes": workspace.store.bytes_used(), "quota_bytes": config.WORKSPACE_QUOTA_BYTES or None},
             **search_settings()}
+
+
+@api.get("/documents/tags")
+def list_document_tags(workspace: Workspace = Depends(current_workspace)):
+    return {"tags": workspace.store.all_tags()}
+
+
+@api.patch("/documents/{source_id}/tags")
+@api.put("/documents/{source_id}/tags")
+def update_document_tags(source_id: str, body: DocumentTagsRequest, workspace: Workspace = Depends(current_workspace)):
+    try:
+        updated = workspace.store.set_document_tags(source_id, body.tags)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found.") from exc
+    return {"source_id": source_id, "tags": updated}
 
 
 @api.get("/documents/{source_id}/passages")
@@ -516,7 +542,10 @@ async def replace_document(source_id: str, file: UploadFile = File(...), workspa
     saved, errors = workspace.store.save_uploads([(file.filename or "upload.txt", content)])
     if not saved:
         raise HTTPException(status_code=400, detail=errors[0]["error"])
+    old_tags = workspace.store.get_document_tags(source_id)
     workspace.store.remove(source_id)
+    if old_tags:
+        workspace.store.set_document_tags(saved[0]["stored_name"], old_tags)
     return {"saved": saved[0], "replaced": source_id,
             "message": "New version uploaded. Index the documents to make it searchable."}
 
@@ -592,7 +621,9 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
     history = chat_history(chat)
 
     def search(query: str) -> list[dict[str, Any]]:
-        return workspace.store.retrieve(query, request.top_k, rerank=request.rerank, source_ids=request.source_ids)
+        return workspace.store.retrieve(
+            query, request.top_k, rerank=request.rerank, source_ids=request.source_ids, tags=request.tags
+        )
 
     sources = search(request.question)
     # A follow-up like "and the price?" may find nothing on its own; then search
@@ -620,6 +651,7 @@ def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]
         "covered": prepared.covered,
         "chat_id": prepared.chat["id"] if prepared.chat else None,
         "sources": answers.source_payload(prepared.sources),
+        "tags": request.tags,
     }
 
 

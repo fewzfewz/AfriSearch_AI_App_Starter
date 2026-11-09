@@ -57,7 +57,7 @@ Sizes: **S** = a few hours, **M** = a few days, **L** = a week or more. 👤 = n
 - [x] **Word, Excel, PowerPoint, HTML, Markdown and CSV** documents. Old binary formats (.doc, .xls, .ppt) are rejected with a hint to re-save.
 - [x] **Replace a document with a new version**; old chats keep their quoted passages.
 - [x] **Bulk delete**.
-- [ ] **Folders or tags** (M): organize documents into structured collections (e.g. Legal, Financial, Guidelines) with filtering in the Library and Ask search scope.
+- [x] **Folders or tags** (M): organize documents into structured collections (e.g. Legal, Financial, Guidelines) with filtering in the Library and Ask search scope.
 - [ ] **Short summary of each document** after upload (M): automatically generate a 3-bullet executive summary and topic tags when indexing finishes.
 - [x] **Email when a long indexing job finishes**.
 - [x] **Upload from the phone camera** ("Take a photo" on phones).

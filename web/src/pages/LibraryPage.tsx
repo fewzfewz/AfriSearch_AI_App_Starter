@@ -1,12 +1,12 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
   AlertCircle, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, HardDrive, Loader2, MoreHorizontal,
-  RefreshCw, ScanText, Search, TextQuote, Trash2, Upload,
+  Plus, RefreshCw, ScanText, Search, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileTile } from "../components/answer";
 import {
-  Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, PageHeader, Popover, Spinner, Stat, cx, useToast,
+  Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Modal, PageHeader, Popover, Spinner, Stat, cx, useToast,
 } from "../components/ui";
 import { api, authHeaders, openDocument, uploadFiles } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -159,6 +159,283 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
   );
 }
 
+function TagModal({
+  open,
+  doc,
+  workspaceTags,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  doc: DocumentInfo | null;
+  workspaceTags: string[];
+  onClose: () => void;
+  onSave: (sourceId: string, tags: string[]) => Promise<void>;
+}) {
+  const [tags, setTags] = useState<string[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (doc) {
+      setTags(doc.tags ?? []);
+      setInput("");
+    }
+  }, [doc, open]);
+
+  if (!doc) return null;
+
+  const addTag = (tagToAdd: string) => {
+    const cleaned = tagToAdd.trim();
+    if (!cleaned || tags.some((t) => t.toLowerCase() === cleaned.toLowerCase())) return;
+    setTags([...tags, cleaned]);
+    setInput("");
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setTags(tags.filter((t) => t.toLowerCase() !== tagToRemove.toLowerCase()));
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await onSave(doc.source_id, tags);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unusedWorkspaceTags = workspaceTags.filter(
+    (wt) => !tags.some((t) => t.toLowerCase() === wt.toLowerCase())
+  );
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Tags for ${doc.source_name}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={save} loading={busy}>Save tags</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-xs text-ink-500">
+          Organize documents into structured collections (e.g. Legal, Financial, Guidelines) to filter in the Library and Ask search scope.
+        </p>
+
+        <div className="flex min-h-[42px] flex-wrap items-center gap-1.5 rounded-xl border border-ink-200 p-2 dark:border-ink-700">
+          {tags.length === 0 ? (
+            <span className="text-xs text-ink-400">No tags added yet.</span>
+          ) : (
+            tags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 rounded-lg bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-800 dark:bg-brand-950/60 dark:text-brand-300"
+              >
+                <Tag className="h-3 w-3" />
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => removeTag(tag)}
+                  className="ml-0.5 rounded p-0.5 hover:bg-brand-200/50 dark:hover:bg-brand-800"
+                  aria-label={`Remove ${tag}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))
+          )}
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            addTag(input);
+          }}
+          className="flex gap-2"
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="New tag name (e.g. Legal)"
+            maxLength={50}
+            className="flex-1 rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm shadow-soft focus:border-brand-400 focus:outline-none focus:ring-4 focus:ring-brand-500/10 dark:border-ink-800 dark:bg-ink-900"
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            disabled={!input.trim()}
+            icon={<Plus className="h-3.5 w-3.5" />}
+          >
+            Add
+          </Button>
+        </form>
+
+        {unusedWorkspaceTags.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Existing tags</p>
+            <div className="flex flex-wrap gap-1.5">
+              {unusedWorkspaceTags.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => addTag(t)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-dashed border-ink-300 px-2 py-1 text-xs text-ink-600 hover:border-brand-500 hover:text-brand-700 dark:border-ink-700 dark:text-ink-300 dark:hover:border-brand-400 dark:hover:text-brand-300"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function BulkTagModal({
+  open,
+  selectedCount,
+  workspaceTags,
+  onClose,
+  onApply,
+}: {
+  open: boolean;
+  selectedCount: number;
+  workspaceTags: string[];
+  onClose: () => void;
+  onApply: (tagsToAdd: string[]) => Promise<void>;
+}) {
+  const [tags, setTags] = useState<string[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setTags([]);
+      setInput("");
+    }
+  }, [open]);
+
+  const addTag = (tagToAdd: string) => {
+    const cleaned = tagToAdd.trim();
+    if (!cleaned || tags.some((t) => t.toLowerCase() === cleaned.toLowerCase())) return;
+    setTags([...tags, cleaned]);
+    setInput("");
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setTags(tags.filter((t) => t.toLowerCase() !== tagToRemove.toLowerCase()));
+  };
+
+  const save = async () => {
+    if (tags.length === 0) return;
+    setBusy(true);
+    try {
+      await onApply(tags);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unusedWorkspaceTags = workspaceTags.filter(
+    (wt) => !tags.some((t) => t.toLowerCase() === wt.toLowerCase())
+  );
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Add tags to ${selectedCount} document${selectedCount === 1 ? "" : "s"}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={save} loading={busy} disabled={tags.length === 0}>Apply tags</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-xs text-ink-500">
+          The tags below will be added to all {selectedCount} selected documents.
+        </p>
+
+        <div className="flex min-h-[42px] flex-wrap items-center gap-1.5 rounded-xl border border-ink-200 p-2 dark:border-ink-700">
+          {tags.length === 0 ? (
+            <span className="text-xs text-ink-400">Add tags below to apply them.</span>
+          ) : (
+            tags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 rounded-lg bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-800 dark:bg-brand-950/60 dark:text-brand-300"
+              >
+                <Tag className="h-3 w-3" />
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => removeTag(tag)}
+                  className="ml-0.5 rounded p-0.5 hover:bg-brand-200/50 dark:hover:bg-brand-800"
+                  aria-label={`Remove ${tag}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))
+          )}
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            addTag(input);
+          }}
+          className="flex gap-2"
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="New tag name (e.g. Guidelines)"
+            maxLength={50}
+            className="flex-1 rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm shadow-soft focus:border-brand-400 focus:outline-none focus:ring-4 focus:ring-brand-500/10 dark:border-ink-800 dark:bg-ink-900"
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            disabled={!input.trim()}
+            icon={<Plus className="h-3.5 w-3.5" />}
+          >
+            Add
+          </Button>
+        </form>
+
+        {unusedWorkspaceTags.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Existing tags</p>
+            <div className="flex flex-wrap gap-1.5">
+              {unusedWorkspaceTags.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => addTag(t)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-dashed border-ink-300 px-2 py-1 text-xs text-ink-600 hover:border-brand-500 hover:text-brand-700 dark:border-ink-700 dark:text-ink-300 dark:hover:border-brand-400 dark:hover:text-brand-300"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 export function LibraryPage() {
   const toast = useToast();
   const { config } = useAuth();
@@ -174,6 +451,9 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [taggingDoc, setTaggingDoc] = useState<DocumentInfo | null>(null);
+  const [bulkTagging, setBulkTagging] = useState(false);
   const replaceInput = useRef<HTMLInputElement>(null);
   const [replacing, setReplacing] = useState<DocumentInfo | null>(null);
 
@@ -265,8 +545,50 @@ export function LibraryPage() {
     }
   };
 
+  const handleSaveTags = async (sourceId: string, tags: string[]) => {
+    try {
+      await api<{ source_id: string; tags: string[] }>(`/documents/${encodeURIComponent(sourceId)}/tags`, {
+        method: "PATCH",
+        json: { tags },
+      });
+      toast("Tags updated");
+      documents.reload();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
+
+  const handleBulkApplyTags = async (tagsToAdd: string[]) => {
+    try {
+      await Promise.all(
+        selected.map(async (id) => {
+          const doc = data?.documents.find((d) => d.source_id === id);
+          const currentTags = doc?.tags ?? [];
+          const merged = Array.from(new Set([...currentTags, ...tagsToAdd]));
+          return api(`/documents/${encodeURIComponent(id)}/tags`, {
+            method: "PATCH",
+            json: { tags: merged },
+          });
+        })
+      );
+      toast(`Added tags to ${selected.length} document${selected.length === 1 ? "" : "s"}`);
+      setSelected([]);
+      documents.reload();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
+
   const data = documents.data;
-  const shown = (data?.documents ?? []).filter((d) => d.source_name.toLowerCase().includes(query.toLowerCase()));
+  const workspaceTags = data?.tags ?? Array.from(
+    new Set((data?.documents ?? []).flatMap((d) => d.tags ?? []))
+  ).sort();
+
+  const shown = (data?.documents ?? []).filter((d) => {
+    const matchesName = d.source_name.toLowerCase().includes(query.toLowerCase());
+    const matchesTag = !selectedTag || (d.tags ?? []).some((t) => t.toLowerCase() === selectedTag.toLowerCase());
+    return matchesName && matchesTag;
+  });
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
@@ -368,6 +690,47 @@ export function LibraryPage() {
           </EmptyState>
         ) : (
           <>
+            {workspaceTags.length > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+                  <Tag className="h-3.5 w-3.5" /> Collections:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTag(null)}
+                  className={cx(
+                    "rounded-lg px-2.5 py-1 text-xs font-medium transition",
+                    selectedTag === null
+                      ? "bg-brand-600 text-white shadow-sm"
+                      : "bg-ink-100 text-ink-700 hover:bg-ink-200 dark:bg-ink-800 dark:text-ink-300 dark:hover:bg-ink-700"
+                  )}
+                >
+                  All ({data.documents.length})
+                </button>
+                {workspaceTags.map((tag) => {
+                  const count = data.documents.filter((d) => (d.tags ?? []).some((t) => t.toLowerCase() === tag.toLowerCase())).length;
+                  const isSelected = selectedTag?.toLowerCase() === tag.toLowerCase();
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => setSelectedTag(isSelected ? null : tag)}
+                      className={cx(
+                        "inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition",
+                        isSelected
+                          ? "bg-brand-600 text-white shadow-sm"
+                          : "bg-ink-100 text-ink-700 hover:bg-ink-200 dark:bg-ink-800 dark:text-ink-300 dark:hover:bg-ink-700"
+                      )}
+                    >
+                      <span>{tag}</span>
+                      <span className={cx("rounded-full px-1.5 py-0.2 text-[10px]", isSelected ? "bg-white/20 text-white" : "bg-ink-200 text-ink-600 dark:bg-ink-700 dark:text-ink-400")}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="mb-3 flex items-center gap-3">
               <div className="relative flex-1 sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
@@ -378,6 +741,7 @@ export function LibraryPage() {
               {selected.length > 0 && (
                 <div className="ml-auto flex items-center gap-2">
                   <span className="text-sm text-ink-500">{selected.length} selected</span>
+                  <Button size="sm" variant="secondary" icon={<Tag className="h-3.5 w-3.5" />} onClick={() => setBulkTagging(true)}>Tag selected</Button>
                   <Button size="sm" variant="danger" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setDeletingSelected(true)}>Delete selected</Button>
                   <Button size="sm" variant="ghost" onClick={() => setSelected([])}>Clear</Button>
                 </div>
@@ -416,6 +780,17 @@ export function LibraryPage() {
                             <span className="flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
                               {doc.type.toUpperCase()}
                               {doc.ocr && <Badge tone="blue"><ScanText className="h-3 w-3" />OCR</Badge>}
+                              {(doc.tags ?? []).map((t) => (
+                                <span
+                                  key={t}
+                                  onClick={(e) => { e.stopPropagation(); setSelectedTag(t); }}
+                                  title={`Filter by collection: ${t}`}
+                                  className="inline-flex cursor-pointer items-center gap-0.5 rounded-md bg-brand-50 px-1.5 py-0.5 text-[11px] font-medium text-brand-700 hover:bg-brand-100 dark:bg-brand-950/60 dark:text-brand-300 dark:hover:bg-brand-900/60"
+                                >
+                                  <Tag className="h-2.5 w-2.5" />
+                                  {t}
+                                </span>
+                              ))}
                               <span className="sm:hidden">· {doc.passages} passages · {formatSize(doc.bytes)}</span>
                             </span>
                           </span>
@@ -432,6 +807,7 @@ export function LibraryPage() {
                           {(close) => (
                             <>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
+                              <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>
                               <MenuItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); openDocument(doc.source_id).catch((e: Error) => toast(e.message, "error")); }}>Open original</MenuItem>
                               <MenuItem icon={<FilePlus2 className="h-4 w-4" />} onClick={() => { close(); setReplacing(doc); replaceInput.current?.click(); }}>Upload new version</MenuItem>
                               <MenuItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setDeleting(doc); }}>Delete</MenuItem>
@@ -496,6 +872,20 @@ export function LibraryPage() {
       >
         <strong className="text-ink-900 dark:text-white">{deleting?.source_name}</strong> will be removed for everyone in this workspace. Answers that cited it keep their quoted passages.
       </ConfirmDialog>
+      <TagModal
+        open={Boolean(taggingDoc)}
+        doc={taggingDoc}
+        workspaceTags={workspaceTags}
+        onClose={() => setTaggingDoc(null)}
+        onSave={handleSaveTags}
+      />
+      <BulkTagModal
+        open={bulkTagging}
+        selectedCount={selected.length}
+        workspaceTags={workspaceTags}
+        onClose={() => setBulkTagging(false)}
+        onApply={handleBulkApplyTags}
+      />
     </div>
   );
 }

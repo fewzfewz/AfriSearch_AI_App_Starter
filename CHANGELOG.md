@@ -7,6 +7,7 @@ All notable changes to AfriSearch are listed here. The project uses [semantic ve
 Ready for a pilot: security, limits, backups, legal pages and account controls.
 
 ### Added
+- Folders and tags: organize workspace documents into structured collections (e.g. Legal, Financial, Guidelines), filter by collection in the Library with count badges, manage tags individually or in bulk, and restrict Ask search scope by tag or collection.
 - Auto-rename chats: chats are automatically given clean, concise titles derived from the first answer and question, replacing raw truncated questions while preserving manually titled chats.
 - Contextual suggested follow-up questions: 2–3 interactive question chips below completed answers, generated in the question's language (English, Amharic, Swahili), clicking one sends it directly into the chat.
 - Per-user rate limits for questions and uploads, and a storage quota per workspace (`AFRISEARCH_*` settings).

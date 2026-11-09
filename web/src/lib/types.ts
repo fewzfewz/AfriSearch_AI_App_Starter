@@ -69,6 +69,7 @@ export interface DocumentInfo {
   pages: number | null;
   bytes: number | null;
   uploaded_at: string | null;
+  tags?: string[];
 }
 
 export interface OcrStatus {
@@ -79,6 +80,7 @@ export interface OcrStatus {
 
 export interface DocumentsResponse {
   documents: DocumentInfo[];
+  tags?: string[];
   indexed_chunks: number;
   stale_documents: number;
   unindexed_files: number;

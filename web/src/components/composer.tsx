@@ -1,5 +1,5 @@
 // The question box, with the answer-model, document-scope and options pickers.
-import { ArrowUp, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Square } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Square, Tag } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStoredState } from "../lib/hooks";
 import type { DocumentInfo, Provider } from "../lib/types";
@@ -48,7 +48,8 @@ function ToolbarButton({ open, onClick, children, label }: { open: boolean; onCl
 }
 
 export function Composer({
-  onSend, onStop, busy, providers, defaultProvider, documents, rerankAvailable, settings, setSettings, scope, setScope, autoFocus,
+  onSend, onStop, busy, providers, defaultProvider, documents, rerankAvailable, settings, setSettings, scope, setScope,
+  tagScope, setTagScope, autoFocus,
 }: {
   onSend: (question: string) => void;
   onStop: () => void;
@@ -61,6 +62,8 @@ export function Composer({
   setSettings: (update: (s: AnswerSettings) => AnswerSettings) => void;
   scope: string[];
   setScope: (ids: string[]) => void;
+  tagScope?: string[];
+  setTagScope?: (tags: string[]) => void;
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
@@ -71,6 +74,10 @@ export function Composer({
   const provider = providers.find((p) => p.id === providerId);
   const answering = settings.mode === "answer";
   const canSend = text.trim().length >= 2 && !busy && (!answering || Boolean(provider));
+  const activeTagScope = tagScope ?? [];
+  const availableTags = Array.from(
+    new Set(documents.flatMap((d) => d.tags ?? []))
+  ).sort();
 
   useEffect(() => {
     const el = textarea.current;
@@ -178,25 +185,71 @@ export function Composer({
           <Popover up width="w-80" trigger={({ open, toggle }) => (
             <ToolbarButton open={open} onClick={toggle} label="Documents to search">
               <Files className="h-3.5 w-3.5" />
-              {scope.length ? `${scope.length} document${scope.length === 1 ? "" : "s"}` : "All documents"}
+              {activeTagScope.length > 0 && scope.length === 0
+                ? (activeTagScope.length === 1 ? `Tag: ${activeTagScope[0]}` : `${activeTagScope.length} collections`)
+                : activeTagScope.length === 0 && scope.length > 0
+                ? `${scope.length} document${scope.length === 1 ? "" : "s"}`
+                : activeTagScope.length > 0 && scope.length > 0
+                ? `${activeTagScope.length} tags, ${scope.length} docs`
+                : "All documents"}
               <ChevronDown className="h-3 w-3" />
             </ToolbarButton>
           )}>
             <div>
               <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
                 <p className="text-xs font-medium uppercase tracking-wide text-ink-400">Search in</p>
-                {scope.length > 0 && (
-                  <button type="button" onClick={() => setScope([])} className="text-xs font-medium text-brand-700 dark:text-brand-400">
+                {(scope.length > 0 || activeTagScope.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScope([]);
+                      setTagScope?.([]);
+                    }}
+                    className="text-xs font-medium text-brand-700 dark:text-brand-400"
+                  >
                     All documents
                   </button>
                 )}
               </div>
+              {availableTags.length > 0 && (
+                <div className="border-b border-ink-100 px-2.5 pb-2.5 pt-0.5 dark:border-ink-800">
+                  <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-400">Collections / Tags</p>
+                  <div className="flex flex-wrap gap-1">
+                    {availableTags.map((tag) => {
+                      const isSelected = activeTagScope.some((t) => t.toLowerCase() === tag.toLowerCase());
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => {
+                            if (!setTagScope) return;
+                            if (isSelected) {
+                              setTagScope(activeTagScope.filter((t) => t.toLowerCase() !== tag.toLowerCase()));
+                            } else {
+                              setTagScope([...activeTagScope, tag]);
+                            }
+                          }}
+                          className={cx(
+                            "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition",
+                            isSelected
+                              ? "bg-brand-600 text-white shadow-sm"
+                              : "bg-ink-100 text-ink-700 hover:bg-ink-200 dark:bg-ink-800 dark:text-ink-300 dark:hover:bg-ink-700"
+                          )}
+                        >
+                          <Tag className="h-3 w-3" />
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {documents.length > 6 && (
                 <input
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
                   placeholder="Filter documents"
-                  className="mx-1 mb-1 w-[calc(100%-0.5rem)] rounded-lg border border-ink-200 bg-transparent px-2.5 py-1.5 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-700"
+                  className="mx-1 my-1.5 w-[calc(100%-0.5rem)] rounded-lg border border-ink-200 bg-transparent px-2.5 py-1.5 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-700"
                 />
               )}
               <div className="max-h-72 overflow-y-auto">
@@ -214,7 +267,18 @@ export function Composer({
                           className="h-4 w-4 rounded border-ink-300 accent-brand-700"
                         />
                         <FileIcon name={doc.source_name} />
-                        <span className="truncate">{doc.source_name}</span>
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate">{doc.source_name}</span>
+                          {doc.tags && doc.tags.length > 0 && (
+                            <span className="flex flex-wrap gap-1 pt-0.5">
+                              {doc.tags.map((t) => (
+                                <span key={t} className="inline-flex items-center gap-0.5 rounded bg-ink-100 px-1 text-[10px] text-ink-600 dark:bg-ink-800 dark:text-ink-400">
+                                  #{t}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </div>
                       </label>
                     );
                   })}

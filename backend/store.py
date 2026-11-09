@@ -92,6 +92,7 @@ class DocumentStore:
         self.index_path = directory / "index.json"
         self.embeddings_path = directory / "embeddings.npy"
         self.manifest_path = directory / "manifest.json"
+        self.tags_path = directory / "tags.json"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         # `lock` guards chunks/embeddings; `rebuild_lock` serializes changes to the index.
         self.lock = threading.Lock()
@@ -132,6 +133,59 @@ class DocumentStore:
 
     def save_manifest(self, manifest: dict[str, str]) -> None:
         self.manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_tags(self) -> dict[str, list[str]]:
+        if self.tags_path.exists():
+            try:
+                data = json.loads(self.tags_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {
+                        str(k): [str(t).strip() for t in v if str(t).strip()]
+                        for k, v in data.items()
+                        if isinstance(v, list)
+                    }
+            except (OSError, ValueError):
+                return {}
+        return {}
+
+    def save_tags(self, tags: dict[str, list[str]]) -> None:
+        self.tags_path.write_text(json.dumps(tags, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_document_tags(self, source_id: str) -> list[str]:
+        return self.load_tags().get(source_id, [])
+
+    def set_document_tags(self, source_id: str, tags: list[str]) -> list[str]:
+        self.file_path(source_id)  # raises FileNotFoundError if source_id is not stored
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for t in tags:
+            tag_str = str(t).strip()
+            if not tag_str or len(tag_str) > 50:
+                continue
+            lower = tag_str.lower()
+            if lower not in seen:
+                seen.add(lower)
+                cleaned.append(tag_str)
+        cleaned = cleaned[:20]
+
+        with self.rebuild_lock:
+            all_tags = self.load_tags()
+            if cleaned:
+                all_tags[source_id] = cleaned
+            else:
+                all_tags.pop(source_id, None)
+            self.save_tags(all_tags)
+        return cleaned
+
+    def all_tags(self) -> list[str]:
+        all_tags = self.load_tags()
+        unique: dict[str, str] = {}
+        for tags in all_tags.values():
+            for t in tags:
+                lower = t.lower()
+                if lower not in unique:
+                    unique[lower] = t
+        return sorted(unique.values(), key=lambda s: s.lower())
 
     def uploaded_files(self) -> list[Path]:
         return [
@@ -293,6 +347,9 @@ class DocumentStore:
             manifest = self.load_manifest()
             if manifest.pop(source_id, None) is not None:
                 self.save_manifest(manifest)
+            tags = self.load_tags()
+            if tags.pop(source_id, None) is not None:
+                self.save_tags(tags)
             with self.lock:
                 keep = [i for i, item in enumerate(self.chunks) if item["source_id"] != source_id]
                 removed = len(self.chunks) - len(keep)
@@ -340,12 +397,14 @@ class DocumentStore:
                 doc["pages"] = max(doc["pages"] or 0, last_page)
             if item.get("index_version") != models.INDEX_VERSION:
                 stale.add(item["source_id"])
+        tags_map = self.load_tags()
         for doc in documents.values():
             path = self.upload_dir / doc["source_id"]
             stat = path.stat() if path.is_file() else None
             doc["bytes"] = stat.st_size if stat else None
             doc["uploaded_at"] = (datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
                                   if stat else None)
+            doc["tags"] = tags_map.get(doc["source_id"], [])
         return list(documents.values()), len(stale)
 
     def passages(self, source_id: str) -> list[dict[str, Any]]:
@@ -358,26 +417,46 @@ class DocumentStore:
 
     def retrieve(
         self, question: str, top_k: int = 4, min_score: float | None = None, rerank: bool | None = None,
-        source_ids: list[str] | None = None,
+        source_ids: list[str] | None = None, tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Best passages for the question, most relevant first.
 
         Passages must reach `min_score` semantic similarity. If reranking is on (the
         default when a reranker is configured), the reranker reorders the best
         candidates; `score` stays the semantic similarity either way. `source_ids`
-        limits the search to those documents.
+        limits the search to those documents; `tags` limits the search to documents
+        carrying any of the specified tags.
         """
         if min_score is None:
             min_score = models.MIN_SCORE
         if rerank is None:
             rerank = bool(models.RERANKER_ID)
         rerank = rerank and bool(models.RERANKER_ID)
+
+        # Tag filtering: resolve matching source_ids
+        query_tags = {t.strip().lower() for t in tags if t.strip()} if tags else None
+        if query_tags is not None:
+            tags_map = self.load_tags()
+            matching_ids = {
+                s_id for s_id, doc_tags in tags_map.items()
+                if any(t.lower() in query_tags for t in doc_tags)
+            }
+            if not matching_ids:
+                return []
+            if source_ids is not None:
+                scope = set(source_ids) & matching_ids
+                if not scope:
+                    return []
+            else:
+                scope = matching_ids
+        else:
+            scope = set(source_ids) if source_ids else None
+
         with self.lock:
             if not self.chunks or self.embeddings is None:
                 return []
             # Only search chunks embedded with the current search model; vectors from
             # another model are not comparable even when they have the same size.
-            scope = set(source_ids) if source_ids else None
             current = [
                 i for i, item in enumerate(self.chunks)
                 if item.get("index_version") == models.INDEX_VERSION and (scope is None or item["source_id"] in scope)

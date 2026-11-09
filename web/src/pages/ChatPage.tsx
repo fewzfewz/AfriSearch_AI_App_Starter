@@ -1,7 +1,7 @@
 // Asking questions: a chat with streamed, cited answers.
 import {
   AlertTriangle, ArrowRight, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, ListChecks, Quote, RotateCcw,
-  Sparkles, ThumbsDown, ThumbsUp, Upload,
+  Sparkles, Tag, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -327,6 +327,7 @@ export function ChatPage() {
   const { reload: reloadChats } = useChats();
   const [settings, setSettings] = useAnswerSettings();
   const [scope, setScope] = useState<string[]>([]);
+  const [tagScope, setTagScope] = useState<string[]>([]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loadingChat, setLoadingChat] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -400,6 +401,7 @@ export function ChatPage() {
         generate_answer: answering,
         provider: answering ? provider : null,
         source_ids: scope.length ? scope : null,
+        tags: tagScope.length ? tagScope : null,
         chat_id: ownChatId,
         save: true,
       };
@@ -504,13 +506,50 @@ export function ChatPage() {
       </div>
       <div className="relative shrink-0 px-4 pb-3 pt-2 sm:px-6">
         <div className="mx-auto max-w-3xl">
-          {scope.length > 0 && (
+          {(scope.length > 0 || tagScope.length > 0) && (
             <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
               Searching only:
+              {tagScope.map((t) => (
+                <Badge key={`tag-${t}`} tone="violet">
+                  <Tag className="h-3 w-3" />
+                  {t}
+                  <button
+                    type="button"
+                    onClick={() => setTagScope((all) => all.filter((item) => item !== t))}
+                    className="ml-0.5 hover:opacity-75"
+                    aria-label={`Remove collection ${t}`}
+                  >
+                    ×
+                  </button>
+                </Badge>
+              ))}
               {scope.map((id) => {
                 const doc = docs?.documents.find((d) => d.source_id === id);
-                return doc ? <Badge key={id}><FileIcon name={doc.source_name} className="h-3 w-3" />{doc.source_name}</Badge> : null;
+                return doc ? (
+                  <Badge key={id}>
+                    <FileIcon name={doc.source_name} className="h-3 w-3" />
+                    {doc.source_name}
+                    <button
+                      type="button"
+                      onClick={() => setScope((all) => all.filter((item) => item !== id))}
+                      className="ml-0.5 hover:opacity-75"
+                      aria-label={`Remove document ${doc.source_name}`}
+                    >
+                      ×
+                    </button>
+                  </Badge>
+                ) : null;
               })}
+              <button
+                type="button"
+                onClick={() => {
+                  setScope([]);
+                  setTagScope([]);
+                }}
+                className="ml-1 text-xs text-brand-700 hover:underline dark:text-brand-400"
+              >
+                Clear all
+              </button>
             </div>
           )}
           <Composer
@@ -525,6 +564,8 @@ export function ChatPage() {
             setSettings={setSettings}
             scope={scope}
             setScope={setScope}
+            tagScope={tagScope}
+            setTagScope={setTagScope}
             autoFocus={showEmpty}
           />
           <p className="mt-2 text-center text-[11px] text-ink-400">AfriSearch can be wrong. Check important facts against the cited sources.</p>
