@@ -20,9 +20,23 @@ class ChapaProvider:
     name: str = "chapa"
 
     def __init__(self, secret_key: str | None = None, webhook_secret: str | None = None, api_url: str | None = None):
-        self.secret_key = secret_key or config.CHAPA_SECRET_KEY
-        self.webhook_secret = webhook_secret or config.CHAPA_WEBHOOK_SECRET or self.secret_key
-        self.api_url = api_url or config.CHAPA_API_URL
+        self._secret_key = secret_key
+        self._webhook_secret = webhook_secret
+        self._api_url = api_url
+
+    @property
+    def secret_key(self) -> str:
+        return self._secret_key if self._secret_key is not None else config.CHAPA_SECRET_KEY
+
+    @property
+    def webhook_secret(self) -> str:
+        if self._webhook_secret is not None:
+            return self._webhook_secret
+        return config.CHAPA_WEBHOOK_SECRET or self.secret_key
+
+    @property
+    def api_url(self) -> str:
+        return self._api_url if self._api_url is not None else config.CHAPA_API_URL
 
     @property
     def is_configured(self) -> bool:
@@ -108,16 +122,21 @@ class ChapaProvider:
         raw_body: bytes,
         headers: dict[str, str],
     ) -> bool:
-        if not self.webhook_secret:
-            # Unconfigured in dev/test
-            return True
-
-        sig_header = headers.get("x-chapa-signature") or headers.get("chapa-signature") or headers.get("Chapa-Signature", "")
-        if not sig_header:
+        if not self.webhook_secret or not self.webhook_secret.strip():
+            logger.warning("Chapa webhook verification rejected: webhook_secret is missing or empty")
             return False
 
-        computed = hmac.new(self.webhook_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(computed, sig_header)
+        sig_header = headers.get("x-chapa-signature") or headers.get("chapa-signature") or headers.get("Chapa-Signature", "")
+        if not sig_header or not sig_header.strip():
+            logger.warning("Chapa webhook verification rejected: chapa-signature header missing or empty")
+            return False
+
+        try:
+            computed = hmac.new(self.webhook_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+            return hmac.compare_digest(computed, sig_header.strip())
+        except Exception as e:
+            logger.warning("Chapa signature verification failed: %s", e)
+            return False
 
     def parse_and_process_webhook(
         self,

@@ -5,6 +5,7 @@ from backend.billing.service import (
     get_provider,
     handle_webhook,
     list_invoices,
+    validate_billing_config,
 )
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "get_provider",
     "handle_webhook",
     "list_invoices",
+    "validate_billing_config",
 ]

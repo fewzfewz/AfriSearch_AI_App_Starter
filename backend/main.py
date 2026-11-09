@@ -56,6 +56,8 @@ def preload_models() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    auth.validate_auth_config()
+    billing.validate_billing_config()
     db.fail_interrupted_jobs()
     if os.getenv("AFRISEARCH_PRELOAD_MODELS", "1") != "0":
         threading.Thread(target=preload_models, name="preload", daemon=True).start()  # don't delay startup
@@ -216,7 +218,7 @@ def user_workspaces(user: User, organization_id: str | None = None) -> list[dict
 
 
 def get_workspace_membership(
-    workspace_id: str, user_id: str, organization_id: str
+    workspace_id: str, user_id: str, organization_id: str | None = None
 ) -> dict[str, Any] | None:
     """Retrieve workspace membership within an organization.
 
@@ -232,20 +234,17 @@ def current_workspace(
     x_workspace_id: str | None = Header(default=None),
 ) -> Workspace:
     """FastAPI dependency: the workspace named in X-Workspace-Id, or the first workspace in the active organization."""
-    if x_organization_id:
-        org = db.get_organization(x_organization_id, user.id)
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found.")
-        org_id = org["id"]
-    else:
-        org_id = None
-
     if x_workspace_id:
-        found = get_workspace_membership(x_workspace_id, user.id, org_id) if org_id else db.get_workspace(x_workspace_id, user.id)
+        found = db.get_workspace(x_workspace_id, user.id, organization_id=x_organization_id)
         if not found:
             raise HTTPException(status_code=404, detail="Workspace not found.")
     else:
-        if not org_id:
+        if x_organization_id:
+            org = db.get_organization(x_organization_id, user.id)
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found.")
+            org_id = org["id"]
+        else:
             user_orgs = db.list_user_organizations(user.id)
             if not user_orgs:
                 name_cand = user.name.strip()
@@ -255,6 +254,8 @@ def current_workspace(
             else:
                 org_id = user_orgs[0]["id"]
         workspaces = user_workspaces(user, organization_id=org_id)
+        if not workspaces:
+            raise HTTPException(status_code=404, detail="No workspaces found.")
         found = workspaces[0]
 
     return Workspace(
@@ -262,7 +263,7 @@ def current_workspace(
         name=found["name"],
         role=found["role"],
         user=user,
-        organization_id=found.get("organization_id", org_id or ""),
+        organization_id=found.get("organization_id") or "",
     )
 
 

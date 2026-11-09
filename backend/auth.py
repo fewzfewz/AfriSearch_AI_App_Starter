@@ -52,9 +52,47 @@ def verify_token(token: str) -> dict[str, Any]:
     return jwt.decode(token, key, algorithms=["ES256", "RS256"], audience="authenticated", options=options)
 
 
+def validate_auth_config() -> None:
+    """Validate authentication configuration at startup.
+
+    In production (AFRISEARCH_ENV=production):
+    - AFRISEARCH_AUTH must never be 'none'.
+    - If AFRISEARCH_AUTH=supabase, SUPABASE_URL must be a valid HTTP/HTTPS URL.
+    - Unsupported auth modes raise RuntimeError.
+    """
+    env = (config.ENVIRONMENT or "").strip().lower()
+    auth_mode = (config.AUTH_MODE or "").strip().lower()
+
+    if env == "production":
+        if auth_mode == "none":
+            raise RuntimeError(
+                "Production security violation: AFRISEARCH_ENV=production cannot run with AFRISEARCH_AUTH=none. "
+                "Configure a valid authentication provider (e.g. AFRISEARCH_AUTH=supabase)."
+            )
+        if auth_mode == "supabase":
+            if not config.SUPABASE_URL or not config.SUPABASE_URL.startswith(("http://", "https://")):
+                raise RuntimeError(
+                    "Production configuration error: SUPABASE_URL must be a valid HTTP/HTTPS URL when AFRISEARCH_AUTH=supabase."
+                )
+        else:
+            raise RuntimeError(
+                f"Production configuration error: Unsupported authentication mode '{auth_mode}'."
+            )
+    else:
+        if auth_mode not in ("none", "supabase"):
+            raise RuntimeError(
+                f"Configuration error: Unsupported authentication mode '{auth_mode}'."
+            )
+
+
 def current_user(authorization: str | None = Header(default=None)) -> User:
     """FastAPI dependency: the signed-in user (created in the database on first sight)."""
     if config.AUTH_MODE == "none":
+        if (config.ENVIRONMENT or "").strip().lower() == "production":
+            raise HTTPException(
+                status_code=500,
+                detail="Production authentication error: AFRISEARCH_AUTH=none is prohibited in production.",
+            )
         user = LOCAL_USER
     elif config.AUTH_MODE == "supabase":
         if not config.SUPABASE_URL:

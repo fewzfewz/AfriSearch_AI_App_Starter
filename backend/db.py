@@ -356,7 +356,16 @@ def migrate(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS webhook_events_lookup ON webhook_events (id, provider);")
 
-    # 7. Check for unassigned workspaces
+    # 7. Backfill organization_members for any workspace members lacking an entry
+    conn.execute("""
+    INSERT OR IGNORE INTO organization_members (organization_id, user_id, role, joined_at)
+    SELECT w.organization_id, m.user_id, 'member', m.added_at
+    FROM members m
+    JOIN workspaces w ON w.id = m.workspace_id
+    WHERE w.organization_id IS NOT NULL
+    """)
+
+    # 8. Check for unassigned workspaces
     unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
     if not unassigned:
         return  # Fully migrated
@@ -489,13 +498,23 @@ def ensure_user(user_id: str, email: str, name: str) -> bool:
             (user_id, email, name, ts),
         )
         if email:
-            # Legacy workspace invitations to this email turn into memberships on first sign in.
+            # Workspace invitations to this email turn into memberships on first sign in.
             conn.execute(
-                "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) "
-                "SELECT workspace_id, ?, 'member', ? FROM invitations WHERE email = lower(?)",
+                """
+                INSERT OR IGNORE INTO organization_members (organization_id, user_id, role, joined_at)
+                SELECT w.organization_id, ?, 'member', ?
+                FROM invitations i
+                JOIN workspaces w ON w.id = i.workspace_id
+                WHERE lower(i.email) = lower(?) AND w.organization_id IS NOT NULL
+                """,
                 (user_id, ts, email),
             )
-            conn.execute("DELETE FROM invitations WHERE email = lower(?)", (email,))
+            conn.execute(
+                "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) "
+                "SELECT workspace_id, ?, 'member', ? FROM invitations WHERE lower(email) = lower(?)",
+                (user_id, ts, email),
+            )
+            conn.execute("DELETE FROM invitations WHERE lower(email) = lower(?)", (email,))
 
         # Ensure every real user has at least one personal organization
         if user_id != SYSTEM_USER_ID:
@@ -1078,46 +1097,92 @@ def list_workspaces(user_id: str, organization_id: str | None = None) -> list[di
     with connect() as conn:
         if organization_id:
             rows = conn.execute(
-                "SELECT w.id, w.organization_id, w.name, w.created_at, coalesce(m.role, om.role) AS role, "
-                "(SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count "
-                "FROM workspaces w "
-                "JOIN organization_members om ON om.organization_id = w.organization_id "
-                "LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id "
-                "WHERE om.user_id = ? AND w.organization_id = ? "
-                "AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin')) "
-                "ORDER BY w.created_at",
+                """
+                SELECT w.id, w.organization_id, w.name, w.created_at,
+                    CASE
+                        WHEN om.role = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' AND coalesce(m.role, '') = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' THEN 'admin'
+                        ELSE m.role
+                    END AS role,
+                    (SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count
+                FROM workspaces w
+                JOIN organization_members om ON om.organization_id = w.organization_id AND om.user_id = ?
+                LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id
+                WHERE w.organization_id = ?
+                  AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin'))
+                ORDER BY w.created_at
+                """,
                 (user_id, organization_id),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT w.id, w.organization_id, w.name, w.created_at, m.role, "
-                "(SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count "
-                "FROM workspaces w JOIN members m ON m.workspace_id = w.id "
-                "WHERE m.user_id = ? ORDER BY w.created_at",
-                (user_id,),
+                """
+                SELECT w.id, w.organization_id, w.name, w.created_at,
+                    CASE
+                        WHEN om.role = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' AND coalesce(m.role, '') = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' THEN 'admin'
+                        ELSE coalesce(m.role, 'member')
+                    END AS role,
+                    (SELECT count(*) FROM members WHERE workspace_id = w.id) AS member_count
+                FROM workspaces w
+                LEFT JOIN organization_members om ON om.organization_id = w.organization_id AND om.user_id = ?
+                LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = ?
+                WHERE (
+                    (w.organization_id IS NOT NULL AND om.user_id IS NOT NULL AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin')))
+                    OR
+                    (w.organization_id IS NULL AND m.user_id IS NOT NULL)
+                )
+                ORDER BY w.created_at
+                """,
+                (user_id, user_id),
             ).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_workspace(workspace_id: str, user_id: str, organization_id: str | None = None) -> dict[str, Any] | None:
-    """The workspace with the user's role, or None if the user isn't a member."""
+    """The workspace with the user's role, or None if the user isn't an authorized member."""
     with connect() as conn:
-        if organization_id:
+        ws = conn.execute(
+            "SELECT id, organization_id, name, created_at FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if not ws:
+            return None
+
+        actual_org_id = ws["organization_id"]
+
+        # If a specific organization_id was asserted, it must match the workspace's actual owning org
+        if organization_id and actual_org_id and organization_id != actual_org_id:
+            return None
+
+        if actual_org_id:
             row = conn.execute(
-                "SELECT w.id, w.organization_id, w.name, w.created_at, coalesce(m.role, om.role) AS role "
-                "FROM workspaces w "
-                "JOIN organization_members om ON om.organization_id = w.organization_id "
-                "LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id "
-                "WHERE w.id = ? AND om.user_id = ? AND w.organization_id = ? "
-                "AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin'))",
-                (workspace_id, user_id, organization_id),
+                """
+                SELECT w.id, w.organization_id, w.name, w.created_at,
+                    CASE
+                        WHEN om.role = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' AND coalesce(m.role, '') = 'owner' THEN 'owner'
+                        WHEN om.role = 'admin' THEN 'admin'
+                        ELSE m.role
+                    END AS role
+                FROM workspaces w
+                JOIN organization_members om ON om.organization_id = w.organization_id AND om.user_id = ?
+                LEFT JOIN members m ON m.workspace_id = w.id AND m.user_id = om.user_id
+                WHERE w.id = ?
+                  AND (m.user_id IS NOT NULL OR om.role IN ('owner', 'admin'))
+                """,
+                (user_id, workspace_id),
             ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT w.id, w.organization_id, w.name, w.created_at, m.role FROM workspaces w "
-                "JOIN members m ON m.workspace_id = w.id WHERE w.id = ? AND m.user_id = ?",
-                (workspace_id, user_id),
-            ).fetchone()
+            return _row(row)
+
+        # Legacy fallback: workspaces without an organization_id
+        row = conn.execute(
+            "SELECT w.id, w.organization_id, w.name, w.created_at, m.role FROM workspaces w "
+            "JOIN members m ON m.workspace_id = w.id WHERE w.id = ? AND m.user_id = ?",
+            (workspace_id, user_id),
+        ).fetchone()
         return _row(row)
 
 
@@ -1145,11 +1210,18 @@ def add_member(workspace_id: str, user_id: str, role: str = "member") -> None:
     if role not in ("owner", "admin", "member", "viewer"):
         raise ValueError("Invalid workspace role")
     with connect() as conn:
+        ts = now()
         conn.execute(
             "INSERT INTO members (workspace_id, user_id, role, added_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role",
-            (workspace_id, user_id, role, now()),
+            (workspace_id, user_id, role, ts),
         )
+        ws = conn.execute("SELECT organization_id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        if ws and ws["organization_id"]:
+            conn.execute(
+                "INSERT OR IGNORE INTO organization_members (organization_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+                (ws["organization_id"], user_id, ts),
+            )
 
 
 def update_workspace_member_role(workspace_id: str, user_id: str, role: str) -> None:

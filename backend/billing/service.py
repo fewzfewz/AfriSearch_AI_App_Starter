@@ -82,3 +82,28 @@ def handle_webhook(
 
 def list_invoices(organization_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return db.list_organization_invoices(organization_id, limit=limit)
+
+
+def validate_billing_config() -> None:
+    """Validate payment provider configuration at startup.
+
+    In production (AFRISEARCH_ENV=production):
+    - If a payment provider is enabled (is_configured is True), its webhook secret must be configured.
+    - If a payment provider is disabled (no secret key), credentials are not required.
+    """
+    env = (config.ENVIRONMENT or "").strip().lower()
+    if env == "production":
+        stripe = get_provider("stripe")
+        if stripe.is_configured:
+            if not stripe.webhook_secret or not stripe.webhook_secret.strip():
+                raise RuntimeError(
+                    "Production billing configuration error: STRIPE_SECRET_KEY is configured but STRIPE_WEBHOOK_SECRET is missing. "
+                    "Stripe webhooks cannot be verified in production without a webhook secret."
+                )
+        chapa = get_provider("chapa")
+        if chapa.is_configured:
+            if not chapa.webhook_secret or not chapa.webhook_secret.strip():
+                raise RuntimeError(
+                    "Production billing configuration error: CHAPA_SECRET_KEY is configured but CHAPA_WEBHOOK_SECRET is missing. "
+                    "Chapa webhooks cannot be verified in production without a webhook secret."
+                )

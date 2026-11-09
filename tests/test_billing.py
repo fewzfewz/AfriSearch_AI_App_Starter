@@ -1,13 +1,37 @@
 """Tests for Stripe & Chapa billing integration, webhook processing, and invoices ledger."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import time
+import pytest
 from fastapi.testclient import TestClient
 
-from backend import db, entitlements, main
+from backend import config, db, entitlements, main
 
 client = TestClient(main.app)
+
+TEST_STRIPE_WEBHOOK_SECRET = "whsec_test_secret_for_tests_123456"
+TEST_CHAPA_WEBHOOK_SECRET = "chapa_sec_test_secret_for_tests_123456"
+
+
+def stripe_sign(raw_body: bytes, secret: str = TEST_STRIPE_WEBHOOK_SECRET) -> dict[str, str]:
+    t = int(time.time())
+    signed_payload = f"{t}.".encode("utf-8") + raw_body
+    computed = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return {
+        "Stripe-Signature": f"t={t},v1={computed}",
+        "Content-Type": "application/json",
+    }
+
+
+def chapa_sign(raw_body: bytes, secret: str = TEST_CHAPA_WEBHOOK_SECRET) -> dict[str, str]:
+    computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return {
+        "x-chapa-signature": computed,
+        "Content-Type": "application/json",
+    }
 
 
 def setup_local_user() -> None:
@@ -45,7 +69,8 @@ def test_billing_checkout_and_rbac():
     assert "tx_ref" in chapa_data["checkout_url"] or "mock_chapa_" in chapa_data["session_id"]
 
 
-def test_stripe_webhook_checkout_completed_and_idempotency():
+def test_stripe_webhook_checkout_completed_and_idempotency(monkeypatch):
+    monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", TEST_STRIPE_WEBHOOK_SECRET)
     setup_local_user()
     org = db.create_organization("Stripe Webhook Org", "local")
     org_id = org["id"]
@@ -78,10 +103,11 @@ def test_stripe_webhook_checkout_completed_and_idempotency():
     }
 
     raw_body = json.dumps(webhook_payload).encode("utf-8")
+    headers = stripe_sign(raw_body)
     resp = client.post(
         "/api/webhooks/stripe",
         content=raw_body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
     result = resp.json()
@@ -107,13 +133,14 @@ def test_stripe_webhook_checkout_completed_and_idempotency():
     resp_repeat = client.post(
         "/api/webhooks/stripe",
         content=raw_body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     assert resp_repeat.status_code == 200
     assert resp_repeat.json()["status"] == "already_processed"
 
 
-def test_stripe_webhook_invoice_paid_and_subscription_lifecycle():
+def test_stripe_webhook_invoice_paid_and_subscription_lifecycle(monkeypatch):
+    monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", TEST_STRIPE_WEBHOOK_SECRET)
     setup_local_user()
     org = db.create_organization("Stripe Lifecycle Org", "local")
     org_id = org["id"]
@@ -155,7 +182,8 @@ def test_stripe_webhook_invoice_paid_and_subscription_lifecycle():
             }
         },
     }
-    resp = client.post("/api/webhooks/stripe", content=json.dumps(inv_payload).encode("utf-8"))
+    raw_inv = json.dumps(inv_payload).encode("utf-8")
+    resp = client.post("/api/webhooks/stripe", content=raw_inv, headers=stripe_sign(raw_inv))
     assert resp.status_code == 200
     assert resp.json()["status"] == "processed"
 
@@ -176,7 +204,8 @@ def test_stripe_webhook_invoice_paid_and_subscription_lifecycle():
             }
         },
     }
-    resp = client.post("/api/webhooks/stripe", content=json.dumps(update_payload).encode("utf-8"))
+    raw_upd = json.dumps(update_payload).encode("utf-8")
+    resp = client.post("/api/webhooks/stripe", content=raw_upd, headers=stripe_sign(raw_upd))
     assert resp.status_code == 200
 
     sub_updated = db.get_organization_subscription(org_id)
@@ -195,7 +224,8 @@ def test_stripe_webhook_invoice_paid_and_subscription_lifecycle():
             }
         },
     }
-    resp = client.post("/api/webhooks/stripe", content=json.dumps(del_payload).encode("utf-8"))
+    raw_del = json.dumps(del_payload).encode("utf-8")
+    resp = client.post("/api/webhooks/stripe", content=raw_del, headers=stripe_sign(raw_del))
     assert resp.status_code == 200
 
     sub_canceled = db.get_organization_subscription(org_id)
@@ -203,7 +233,8 @@ def test_stripe_webhook_invoice_paid_and_subscription_lifecycle():
     assert sub_canceled["status"] == "canceled"
 
 
-def test_chapa_webhook_charge_success():
+def test_chapa_webhook_charge_success(monkeypatch):
+    monkeypatch.setattr(config, "CHAPA_WEBHOOK_SECRET", TEST_CHAPA_WEBHOOK_SECRET)
     setup_local_user()
     org = db.create_organization("Chapa Webhook Org", "local")
     org_id = org["id"]
@@ -223,7 +254,8 @@ def test_chapa_webhook_charge_success():
     }
 
     raw_body = json.dumps(chapa_payload).encode("utf-8")
-    resp = client.post("/api/webhooks/chapa", content=raw_body)
+    headers = chapa_sign(raw_body)
+    resp = client.post("/api/webhooks/chapa", content=raw_body, headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "processed"
 
@@ -243,7 +275,7 @@ def test_chapa_webhook_charge_success():
     assert invoices[0]["status"] == "paid"
 
     # Repeat test for idempotency
-    resp_dup = client.post("/api/webhooks/chapa", content=raw_body)
+    resp_dup = client.post("/api/webhooks/chapa", content=raw_body, headers=headers)
     assert resp_dup.status_code == 200
     assert resp_dup.json()["status"] == "already_processed"
 

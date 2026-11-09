@@ -28,8 +28,16 @@ class StripeProvider:
     name: str = "stripe"
 
     def __init__(self, secret_key: str | None = None, webhook_secret: str | None = None):
-        self.secret_key = secret_key or config.STRIPE_SECRET_KEY
-        self.webhook_secret = webhook_secret or config.STRIPE_WEBHOOK_SECRET
+        self._secret_key = secret_key
+        self._webhook_secret = webhook_secret
+
+    @property
+    def secret_key(self) -> str:
+        return self._secret_key if self._secret_key is not None else config.STRIPE_SECRET_KEY
+
+    @property
+    def webhook_secret(self) -> str:
+        return self._webhook_secret if self._webhook_secret is not None else config.STRIPE_WEBHOOK_SECRET
 
     @property
     def is_configured(self) -> bool:
@@ -123,12 +131,13 @@ class StripeProvider:
         raw_body: bytes,
         headers: dict[str, str],
     ) -> bool:
-        if not self.webhook_secret:
-            # When unconfigured in dev/test, permit requests
-            return True
+        if not self.webhook_secret or not self.webhook_secret.strip():
+            logger.warning("Stripe webhook verification rejected: webhook_secret is missing or empty")
+            return False
 
         sig_header = headers.get("stripe-signature") or headers.get("Stripe-Signature", "")
-        if not sig_header:
+        if not sig_header or not sig_header.strip():
+            logger.warning("Stripe webhook verification rejected: stripe-signature header missing or empty")
             return False
 
         # Parse t=...,v1=...
@@ -144,9 +153,13 @@ class StripeProvider:
             return False
 
         # Verify HMAC
-        signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
-        computed = hmac.new(self.webhook_secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(computed, expected_sig)
+        try:
+            signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
+            computed = hmac.new(self.webhook_secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+            return hmac.compare_digest(computed, expected_sig)
+        except Exception as e:
+            logger.warning("Stripe signature verification failed: %s", e)
+            return False
 
     def parse_and_process_webhook(
         self,
