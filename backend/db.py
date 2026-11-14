@@ -11,6 +11,7 @@ import logging
 import secrets
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -461,7 +462,8 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         with _init_lock:
-            if str(path) not in _initialized:
+            tables_exist = str(path) in _initialized and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone() is not None
+            if not tables_exist:
                 conn.execute("PRAGMA journal_mode = WAL")  # readers don't block the writer
                 conn.executescript(SCHEMA)
                 migrate(conn)
@@ -484,20 +486,60 @@ def _row(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
 
 # --- users and organizations ------------------------------------------------------
 
+# Cache of verified users: (data_dir_str, user_id) -> (monotonic_timestamp, email, name)
+# Prevents SQLite write locks / contention on ensure_user during high-concurrency read requests.
+_user_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+_user_cache_lock = threading.Lock()
+USER_CACHE_TTL = 300.0  # seconds
+
+
+def clear_user_cache(user_id: str | None = None) -> None:
+    """Clear in-memory user cache entries (all or for a specific user)."""
+    with _user_cache_lock:
+        if user_id is not None:
+            data_dir_str = str(config.DATA_DIR)
+            _user_cache.pop((data_dir_str, user_id), None)
+            for k in list(_user_cache.keys()):
+                if k[1] == user_id:
+                    _user_cache.pop(k, None)
+        else:
+            _user_cache.clear()
+
+
+def clear_user_cache_by_email(email: str) -> None:
+    """Evict cached user entries matching an email (e.g. when invitations arrive)."""
+    norm = email.strip().lower()
+    with _user_cache_lock:
+        to_remove = [k for k, entry in _user_cache.items() if entry[1].lower() == norm]
+        for k in to_remove:
+            _user_cache.pop(k, None)
+
+
 def ensure_user(user_id: str, email: str, name: str) -> bool:
     """Create the user on first sight; keep email and name up to date; accept invitations.
 
     Returns True when the user is new.
     """
+    now_mono = time.monotonic()
+    email_clean = (email or "").strip()
+    name_clean = (name or "").strip()
+    cache_key = (str(config.DATA_DIR), user_id)
+    with _user_cache_lock:
+        cached = _user_cache.get(cache_key)
+        if cached is not None:
+            cached_ts, cached_email, cached_name = cached
+            if now_mono - cached_ts < USER_CACHE_TTL and cached_email == email_clean and cached_name == name_clean:
+                return False
+
     ts = now()
     with connect() as conn:
         new = conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None
         conn.execute(
             "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET email = excluded.email, name = excluded.name",
-            (user_id, email, name, ts),
+            (user_id, email_clean, name_clean, ts),
         )
-        if email:
+        if email_clean:
             # Workspace invitations to this email turn into memberships on first sign in.
             conn.execute(
                 """
@@ -507,14 +549,14 @@ def ensure_user(user_id: str, email: str, name: str) -> bool:
                 JOIN workspaces w ON w.id = i.workspace_id
                 WHERE lower(i.email) = lower(?) AND w.organization_id IS NOT NULL
                 """,
-                (user_id, ts, email),
+                (user_id, ts, email_clean),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO members (workspace_id, user_id, role, added_at) "
                 "SELECT workspace_id, ?, 'member', ? FROM invitations WHERE lower(email) = lower(?)",
-                (user_id, ts, email),
+                (user_id, ts, email_clean),
             )
-            conn.execute("DELETE FROM invitations WHERE lower(email) = lower(?)", (email,))
+            conn.execute("DELETE FROM invitations WHERE lower(email) = lower(?)", (email_clean,))
 
         # Ensure every real user has at least one personal organization
         if user_id != SYSTEM_USER_ID:
@@ -524,8 +566,7 @@ def ensure_user(user_id: str, email: str, name: str) -> bool:
             ).fetchone()
             if not has_org:
                 org_id = new_id()
-                name_cand = name.strip()
-                org_name = f"{name_cand}'s Organization" if name_cand else "Personal Organization"
+                org_name = f"{name_clean}'s Organization" if name_clean else "Personal Organization"
                 conn.execute(
                     "INSERT INTO organizations (id, name, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                     (org_id, org_name, user_id, ts, ts),
@@ -539,6 +580,17 @@ def ensure_user(user_id: str, email: str, name: str) -> bool:
                     "VALUES (?, ?, 'free', 'active', 1, 'none', ?, '2099-12-31T23:59:59Z', 0, ?, ?)",
                     (new_id(), org_id, ts, ts, ts),
                 )
+
+    with _user_cache_lock:
+        if len(_user_cache) > 5000:
+            cutoff = now_mono - USER_CACHE_TTL
+            stale_keys = [k for k, v in _user_cache.items() if v[0] < cutoff]
+            for k in stale_keys:
+                _user_cache.pop(k, None)
+            if len(_user_cache) > 5000:
+                _user_cache.clear()
+        _user_cache[cache_key] = (now_mono, email_clean, name_clean)
+
     return new
 
 
@@ -1025,6 +1077,7 @@ def invite(workspace_id: str, email: str, invited_by: str) -> None:
     with connect() as conn:
         conn.execute("INSERT OR IGNORE INTO invitations VALUES (?, lower(?), ?, ?)",
                      (workspace_id, email.strip(), invited_by, now()))
+    clear_user_cache_by_email(email.strip())
 
 
 def list_invitations(workspace_id: str) -> list[dict[str, Any]]:
@@ -1300,6 +1353,7 @@ def delete_user(user_id: str) -> None:
                 conn.execute("DELETE FROM organizations WHERE id = ?", (org["id"],))
         conn.execute("DELETE FROM organization_members WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    clear_user_cache(user_id)
 
 
 # --- chats and messages -------------------------------------------------------------
@@ -1452,6 +1506,7 @@ def usage_summary(workspace_id: str, since: str) -> dict[str, Any]:
             "SELECT provider, model, count(*) AS answers, sum(input_tokens) AS input_tokens, "
             "sum(output_tokens) AS output_tokens, sum(cost_usd) AS cost_usd, "
             "sum(cost_usd IS NULL) AS unpriced FROM usage WHERE workspace_id = ? AND created_at >= ? "
+            "AND (input_tokens > 0 OR output_tokens > 0) "
             "GROUP BY provider, model ORDER BY answers DESC",
             (workspace_id, since),
         ).fetchall()

@@ -13,6 +13,7 @@ evaluation/results/
 data/afrisearch.db*
 data/workspaces/
 data/feedback.jsonl*
+data/migration-report-*.json
 web/node_modules/
 web/dist/
 backups/

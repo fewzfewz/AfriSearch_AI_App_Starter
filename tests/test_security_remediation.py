@@ -495,3 +495,132 @@ def test_docker_compose_production_config_validates():
     assert res.returncode == 0, f"docker-compose config failed: {res.stderr}"
     assert "STRIPE_SECRET_KEY" in res.stdout
     assert "CHAPA_WEBHOOK_SECRET" in res.stdout
+
+
+# ==============================================================================
+# Phase 2: Operational & Reliability Verification Tests
+# ==============================================================================
+
+def test_ensure_user_in_memory_ttl_cache(app_env):
+    """Verify in-memory user cache prevents repeated SQLite writes and handles invalidation."""
+    db.clear_user_cache()
+
+    uid = "test-cache-user"
+    email1 = "cache1@example.com"
+    name1 = "Cache User 1"
+
+    # First call: creates user in DB, returns True
+    is_new = db.ensure_user(uid, email1, name1)
+    assert is_new is True
+
+    # Immediate second call: hits cache, returns False without writing to DB
+    assert db.ensure_user(uid, email1, name1) is False
+
+    # Changing user name: cache miss due to metadata mismatch, executes DB update
+    name2 = "Cache User Renamed"
+    assert db.ensure_user(uid, email1, name2) is False
+    assert db.get_user(uid)["name"] == name2
+
+    # Clear cache explicitly
+    db.clear_user_cache(uid)
+    assert db.ensure_user(uid, email1, name2) is False
+
+    # Deleting user evicts cache
+    db.delete_user(uid)
+    # Re-creating after deletion: should be recognized as new
+    assert db.ensure_user(uid, email1, name1) is True
+
+
+def test_user_cache_invalidation_on_invitation(app_env):
+    """Verify that creating an invitation evicts any cached user with that email."""
+    db.clear_user_cache()
+
+    owner_id = "org-inviter"
+    invited_id = "org-invitee"
+    invitee_email = "invitee@example.com"
+
+    db.ensure_user(owner_id, "owner@example.com", "Owner")
+    org = db.create_organization("Inv Org", owner_id)
+    ws = db.create_workspace("Inv WS", owner_id, organization_id=org["id"])
+
+    # Invitee signs in first before invitation
+    db.ensure_user(invited_id, invitee_email, "Invitee")
+    # Verify invitee is not in workspace
+    assert db.get_workspace(ws["id"], invited_id) is None
+
+    # Owner invites invitee by email
+    db.invite(ws["id"], invitee_email, owner_id)
+
+    # Invitee's next ensure_user should hit DB and enroll in workspace & organization
+    db.ensure_user(invited_id, invitee_email, "Invitee")
+    ws_member = db.get_workspace(ws["id"], invited_id)
+    assert ws_member is not None
+    assert ws_member["role"] == "member"
+
+
+def test_configurable_indexer_workers():
+    """Verify configurable indexer worker concurrency."""
+    from backend import jobs
+    assert config.INDEXER_WORKERS >= 1
+    assert jobs.INDEXER_WORKERS == config.INDEXER_WORKERS
+
+
+def test_local_and_canned_queries_metered_against_quota(client, app_env, monkeypatch):
+    """Verify local zero-token queries count against monthly question limits."""
+    from backend import llm
+
+    uid = "local"
+    db.ensure_user(uid, "", "Local user")
+    org = db.create_organization("Meter Org", uid)
+    ws = db.create_workspace("Meter WS", uid, organization_id=org["id"])
+    headers = {"X-Workspace-Id": ws["id"], "X-Organization-Id": org["id"]}
+
+    # Upload and index a document so index is ready
+    client.post("/documents/upload", headers=headers, files=[("files", ("test.txt", b"Solar energy powers things.", "text/plain"))])
+    client.post("/documents/index", headers=headers)
+
+    fake_local = llm.Provider(
+        id="fakelocal",
+        label="Fake Local",
+        kind="local",
+        model="fake-local-model",
+        check=lambda: None,
+        generate=lambda sys, prompt: "Fake local response",
+    )
+    monkeypatch.setitem(llm.PROVIDERS, "fakelocal", fake_local)
+
+    # Initial summary
+    summary = db.get_organization_usage_summary(org["id"])
+    initial_questions = summary["questions_count"]
+
+    # Ask a question with local fake provider (0 billed tokens)
+    res = client.post("/ask", json={"question": "What powers things?", "provider": "fakelocal"}, headers=headers)
+    assert res.status_code == 200
+
+    # Verify questions_count incremented
+    summary_after = db.get_organization_usage_summary(org["id"])
+    assert summary_after["questions_count"] == initial_questions + 1
+
+    # Verify /insights hosted-model answers count is 0 (since it was a 0-token local model)
+    insights_res = client.get("/insights", headers=headers)
+    assert insights_res.status_code == 200
+    assert insights_res.json()["usage"]["answers"] == 0
+
+    # Artificially set usage questions to Free tier limit (100)
+    # by inserting usage rows directly
+    for _ in range(100 - summary_after["questions_count"]):
+        db.record_usage(ws["id"], uid, "fakelocal", "fake-local-model", 0, 0, 0.0)
+
+    # Next ask must hit 402 Payment Required
+    res_blocked = client.post("/ask", json={"question": "Another question?", "provider": "fakelocal"}, headers=headers)
+    assert res_blocked.status_code == 402
+    assert "Monthly AI question quota reached" in res_blocked.json()["detail"]
+    assert res_blocked.headers.get("x-upgrade-required") == "queries"
+
+    # Upgrade to Pro
+    db.update_organization_subscription(org["id"], plan_id="pro")
+
+    # Asking now succeeds
+    res_retry = client.post("/ask", json={"question": "Another question?", "provider": "fakelocal"}, headers=headers)
+    assert res_retry.status_code == 200
+

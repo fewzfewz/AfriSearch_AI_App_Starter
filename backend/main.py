@@ -1059,9 +1059,11 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         reason = llm.PROVIDERS[provider].unavailable_reason()
         if reason:
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
-    if workspace.organization_id and provider:
-        prov = llm.PROVIDERS[provider]
-        entitlements.check_can_ask(workspace.organization_id, prov.model, kind=prov.kind)
+    if workspace.organization_id:
+        prov = llm.PROVIDERS.get(provider) if provider else None
+        model_name = prov.model if prov else None
+        kind_name = prov.kind if prov else None
+        entitlements.check_can_ask(workspace.organization_id, model_name, kind=kind_name)
     chat = None
     if request.chat_id:
         chat = db.get_chat(request.chat_id, workspace.id, workspace.user.id)
@@ -1108,12 +1110,15 @@ def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]
 
 def account_usage(workspace: Workspace, provider: str | None, usage: llm.Usage) -> dict[str, Any] | None:
     """Record the tokens an answer used against the workspace; returns them for the message."""
-    if not provider or not (usage.input_tokens or usage.output_tokens):
-        return None  # local models and canned answers cost nothing
-    model = llm.PROVIDERS[provider].model
-    cost = llm.cost_usd(model, usage)
-    db.record_usage(workspace.id, workspace.user.id, provider, model, usage.input_tokens, usage.output_tokens, cost)
-    return {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost_usd": cost}
+    prov = provider or "local"
+    model = llm.PROVIDERS[prov].model if prov in llm.PROVIDERS else prov
+    cost = llm.cost_usd(model, usage) if prov in llm.PROVIDERS else 0.0
+    in_tok = usage.input_tokens or 0
+    out_tok = usage.output_tokens or 0
+    db.record_usage(workspace.id, workspace.user.id, prov, model, in_tok, out_tok, cost)
+    if in_tok or out_tok:
+        return {"input_tokens": in_tok, "output_tokens": out_tok, "cost_usd": cost}
+    return None
 
 
 def maybe_rename_chat(chat: dict[str, Any], question: str, answer: str | None) -> str | None:
@@ -1201,8 +1206,9 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
     def events():
         yield event("sources", **summary)
         if not prepared.provider:
+            used = account_usage(workspace, None, llm.Usage())
             suggestions = answers.generate_suggestions(request.question, prepared.sources, None, prepared.covered)
-            message_id, new_title = save_turn(prepared, summary, None, [], None, time.monotonic() - started, suggestions=suggestions)
+            message_id, new_title = save_turn(prepared, summary, None, [], None, time.monotonic() - started, used, suggestions=suggestions)
             yield event("done", answer=None, removed_citations=[], message_id=message_id, suggestions=suggestions, chat_title=new_title)
             return
         pieces: list[str] = []

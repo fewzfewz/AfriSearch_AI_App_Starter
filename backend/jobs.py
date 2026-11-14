@@ -10,8 +10,10 @@ from backend import config, db, mailer, store
 
 logger = logging.getLogger("afrisearch.jobs")
 
-# One worker: indexing is CPU-heavy (OCR, embeddings), so jobs run one at a time.
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexer")
+# Multi-worker indexing pool: allows concurrent indexing across different workspaces
+# while per-workspace serialization is maintained in start_index_job.
+INDEXER_WORKERS = config.INDEXER_WORKERS
+_executor = ThreadPoolExecutor(max_workers=INDEXER_WORKERS, thread_name_prefix="indexer")
 _futures: dict[str, Future] = {}
 PROGRESS_INTERVAL = 0.5  # seconds between page-by-page progress writes
 

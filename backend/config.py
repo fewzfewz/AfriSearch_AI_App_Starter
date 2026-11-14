@@ -65,6 +65,9 @@ EMAIL_INDEXING_AFTER_SECONDS = float(os.getenv("AFRISEARCH_EMAIL_INDEXING_AFTER"
 # Extra sign-in buttons shown by the web app, e.g. "google"; enable them in Supabase too.
 AUTH_PROVIDERS = [p.strip() for p in os.getenv("AFRISEARCH_AUTH_PROVIDERS", "").split(",") if p.strip()]
 
+# Concurrency of background document indexing jobs (OCR & embeddings).
+INDEXER_WORKERS = max(1, int(os.getenv("AFRISEARCH_INDEXER_WORKERS", "2")))
+
 # Billing & Payment Gateways (Stripe & Chapa)
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
