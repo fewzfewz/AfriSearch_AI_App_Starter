@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, billing, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, auth, billing, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
