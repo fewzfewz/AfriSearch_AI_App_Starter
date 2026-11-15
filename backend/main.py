@@ -84,6 +84,8 @@ class AskRequest(BaseModel):
     generate_answer: bool = True
     # One of llm.PROVIDERS; defaults to AFRISEARCH_DEFAULT_PROVIDER or the first available.
     provider: str | None = None
+    # Model ID to use for the selected provider (e.g. gemini-2.5-pro, gpt-4o, claude-3-5-sonnet).
+    model: str | None = None
     # Reorder passages with the reranker; defaults to on when one is configured.
     rerank: bool | None = None
     # Only search these documents (source ids from GET /api/documents); all when empty.
@@ -173,6 +175,7 @@ class V1AskRequest(BaseModel):
     top_k: int = 5
     rerank: bool = True
     provider: str | None = None
+    model: str | None = None
     tags: list[str] = Field(default_factory=list)
 
 
@@ -1226,7 +1229,7 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
     if org_id:
         prov = llm.PROVIDERS.get(provider) if provider else None
-        model_name = prov.model if prov else None
+        model_name = request.model or (prov.model if prov else None)
         kind_name = prov.kind if prov else None
         entitlements.check_can_ask(org_id, model_name, kind=kind_name)
     chat = None
@@ -1261,10 +1264,11 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
 
 
 def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]:
+    active_model = request.model or (llm.PROVIDERS[prepared.provider].model if prepared.provider else None)
     return {
         "question": request.question,
         "provider": prepared.provider,
-        "model": llm.PROVIDERS[prepared.provider].model if prepared.provider else None,
+        "model": active_model,
         "reranked": any("rerank_score" in item for item in prepared.sources),
         "covered": prepared.covered,
         "chat_id": prepared.chat["id"] if prepared.chat else None,
@@ -1329,7 +1333,7 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
     if prepared.provider:
         try:
             answer = answers.generate_answer(request.question, prepared.sources, prepared.provider,
-                                             prepared.history, usage)
+                                             prepared.history, usage, model=request.model)
         except llm.ProviderError as exc:
             account_usage(workspace, prepared.provider, usage)  # a refusal may still be billed
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1394,7 +1398,7 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                 yield event("token", text=canned)
             else:
                 prompt = answers.build_prompt(request.question, prepared.sources, prepared.history)
-                for piece in llm.stream(prepared.provider, answers.SYSTEM_PROMPT, prompt, usage):
+                for piece in llm.stream(prepared.provider, answers.SYSTEM_PROMPT, prompt, usage, model=request.model):
                     pieces.append(piece)
                     yield event("token", text=piece)
         except Exception as exc:
@@ -1564,6 +1568,7 @@ def v1_ask(
     ask_req = AskRequest(
         question=body.question,
         provider=body.provider,
+        model=body.model,
         top_k=body.top_k,
         rerank=body.rerank,
         tags=body.tags,

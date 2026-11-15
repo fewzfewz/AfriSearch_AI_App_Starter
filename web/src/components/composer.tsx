@@ -1,5 +1,5 @@
 // The question box, with the answer-model, document-scope and options pickers.
-import { ArrowUp, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Square, Tag } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Sparkles, Square, Tag } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStoredState } from "../lib/hooks";
 import type { DocumentInfo, Provider } from "../lib/types";
@@ -8,6 +8,7 @@ import { Badge, Popover, Toggle, cx } from "./ui";
 
 export interface AnswerSettings {
   provider: string | null;
+  model: string | null;
   topK: number;
   rerank: boolean;
   mode: "answer" | "passages";
@@ -15,7 +16,7 @@ export interface AnswerSettings {
 
 export function useAnswerSettings() {
   return useStoredState<AnswerSettings>("afrisearch.answer-settings", {
-    provider: null, topK: 4, rerank: true, mode: "answer",
+    provider: null, model: null, topK: 4, rerank: true, mode: "answer",
   });
 }
 
@@ -69,6 +70,9 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [filter, setFilter] = useState("");
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+  const [customInputOpen, setCustomInputOpen] = useState<string | null>(null);
+  const [customModelText, setCustomModelText] = useState("");
   const textarea = useRef<HTMLTextAreaElement>(null);
   const available = providers.filter((p) => p.available);
   const providerId = available.some((p) => p.id === settings.provider) ? settings.provider : defaultProvider;
@@ -79,6 +83,11 @@ export function Composer({
   const availableTags = Array.from(
     new Set(documents.flatMap((d) => d.tags ?? []))
   ).sort();
+
+  const providerModels = provider?.models ?? (provider ? [{ id: provider.model, name: provider.model }] : []);
+  const activeModelId: string = settings.model || provider?.model || "";
+  const activeModelObj = providerModels.find((m) => m.id === activeModelId);
+  const activeModelLabel = activeModelObj ? activeModelObj.name : activeModelId.split("/").pop() || "";
 
   useEffect(() => {
     const el = textarea.current;
@@ -116,12 +125,17 @@ export function Composer({
       />
       <div className="flex items-center gap-1 px-2 pb-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
-          <Popover up width="w-80" trigger={({ open, toggle }) => (
+          <Popover up width="w-96" trigger={({ open, toggle }) => (
             <ToolbarButton open={open} onClick={toggle} label="Answer model">
               {answering ? (
                 <>
-                  <span className="max-w-[9rem] truncate">{providerName(provider)}</span>
-                  <ChevronDown className="h-3 w-3" />
+                  <span className="max-w-[10rem] truncate">{providerName(provider)}</span>
+                  {activeModelLabel && (
+                    <span className="hidden max-w-[8.5rem] truncate rounded bg-ink-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-600 dark:bg-ink-800 dark:text-ink-300 sm:inline-block">
+                      {activeModelLabel.replace(/\s*\(.*\)\s*$/, "")}
+                    </span>
+                  )}
+                  <ChevronDown className="h-3 w-3 shrink-0" />
                 </>
               ) : (
                 <>
@@ -130,64 +144,203 @@ export function Composer({
               )}
             </ToolbarButton>
           )}>
-            {(close) => (
-              <div className="max-h-96 overflow-y-auto">
-                <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-ink-400">Answer with</p>
-                {available.map((p) => {
-                  const where = whereItRuns(p);
-                  return (
+            {(close) => {
+              const currentExpanded = expandedProvider ?? providerId;
+              return (
+                <div className="max-h-[28rem] overflow-y-auto p-1 text-ink-900 dark:text-ink-100">
+                  <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Answer with AI Model</p>
+                    <span className="text-[11px] text-ink-400">Select provider & model</span>
+                  </div>
+
+                  <div className="space-y-1">
+                    {available.map((p) => {
+                      const isSelectedProvider = answering && p.id === providerId;
+                      const isExpanded = currentExpanded === p.id;
+                      const modelsList = p.models && p.models.length > 0 ? p.models : [{ id: p.model, name: p.model, description: "" }];
+                      const where = whereItRuns(p);
+
+                      return (
+                        <div
+                          key={p.id}
+                          className={cx(
+                            "rounded-xl border transition",
+                            isSelectedProvider
+                              ? "border-brand-300 bg-brand-50/20 dark:border-brand-800 dark:bg-brand-950/20"
+                              : "border-ink-100 bg-transparent hover:border-ink-200 dark:border-ink-800/80 dark:hover:border-ink-700"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2 p-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExpandedProvider(p.id);
+                                const defaultModel = p.models?.[0]?.id || p.model;
+                                setSettings((s) => ({
+                                  ...s,
+                                  provider: p.id,
+                                  model: s.provider === p.id && s.model ? s.model : defaultModel,
+                                  mode: "answer",
+                                }));
+                              }}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            >
+                              <Check className={cx("h-4 w-4 shrink-0 text-brand-600", !isSelectedProvider && "invisible")} />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-sm font-semibold text-ink-900 dark:text-white">{providerName(p)}</span>
+                                  {p.custom_key && (
+                                    <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                                      Your Key
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="block truncate text-xs text-ink-500">
+                                  {isSelectedProvider && activeModelLabel ? activeModelLabel : `${modelsList.length} model${modelsList.length === 1 ? "" : "s"} available`}
+                                </span>
+                              </div>
+                            </button>
+
+                            <div className="flex items-center gap-1">
+                              <Badge tone={where.tone}>{where.icon}{where.text}</Badge>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedProvider(isExpanded ? null : p.id);
+                                }}
+                                className="rounded p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-700 dark:hover:bg-ink-800"
+                                aria-label="Toggle models"
+                              >
+                                <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-180")} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="border-t border-ink-100 bg-white/50 px-2 py-2 dark:border-ink-800/60 dark:bg-ink-900/50">
+                              <p className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-400">Select Model</p>
+                              <div className="space-y-0.5">
+                                {modelsList.map((m) => {
+                                  const isModelActive = isSelectedProvider && (activeModelId === m.id || (!settings.model && m.id === p.model));
+                                  return (
+                                    <button
+                                      key={m.id}
+                                      type="button"
+                                      onClick={() => {
+                                        setSettings((s) => ({ ...s, provider: p.id, model: m.id, mode: "answer" }));
+                                        close();
+                                      }}
+                                      className={cx(
+                                        "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition",
+                                        isModelActive
+                                          ? "bg-brand-100/70 font-medium text-brand-900 dark:bg-brand-950 dark:text-brand-100"
+                                          : "text-ink-700 hover:bg-ink-100 dark:text-ink-300 dark:hover:bg-ink-800"
+                                      )}
+                                    >
+                                      <Check className={cx("mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-600", !isModelActive && "invisible")} />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="font-medium text-ink-900 dark:text-white">{m.name}</span>
+                                          <code className="text-[10px] text-ink-400">{m.id.split("/").pop()}</code>
+                                        </div>
+                                        {m.description && <p className="text-[11px] text-ink-500">{m.description}</p>}
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+
+                                {customInputOpen === p.id ? (
+                                  <div className="mt-1 flex items-center gap-1.5 px-2 pt-1">
+                                    <input
+                                      type="text"
+                                      value={customModelText}
+                                      onChange={(e) => setCustomModelText(e.target.value)}
+                                      placeholder="Custom model ID (e.g. gemini-2.5-flash)..."
+                                      className="h-7 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-900 dark:border-ink-700 dark:bg-ink-800 dark:text-white"
+                                      autoFocus
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" && customModelText.trim()) {
+                                          e.preventDefault();
+                                          setSettings((s) => ({ ...s, provider: p.id, model: customModelText.trim(), mode: "answer" }));
+                                          setCustomInputOpen(null);
+                                          close();
+                                        }
+                                      }}
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={!customModelText.trim()}
+                                      onClick={() => {
+                                        if (customModelText.trim()) {
+                                          setSettings((s) => ({ ...s, provider: p.id, model: customModelText.trim(), mode: "answer" }));
+                                          setCustomInputOpen(null);
+                                          close();
+                                        }
+                                      }}
+                                      className="h-7 rounded-md bg-brand-600 px-2.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                                    >
+                                      Use
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCustomInputOpen(null)}
+                                      className="h-7 rounded-md px-1.5 text-xs text-ink-500 hover:text-ink-800"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCustomInputOpen(p.id);
+                                      setCustomModelText(activeModelId || "");
+                                    }}
+                                    className="mt-0.5 flex w-full items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
+                                  >
+                                    <Sparkles className="h-3 w-3" /> Custom model ID...
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-2 pt-2 border-t border-ink-100 dark:border-ink-800">
                     <button
-                      key={p.id}
                       type="button"
                       onClick={() => {
-                        setSettings((s) => ({ ...s, provider: p.id, mode: "answer" }));
+                        setSettings((s) => ({ ...s, mode: "passages" }));
                         close();
                       }}
                       className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-ink-100 dark:hover:bg-ink-800"
                     >
-                      <Check className={cx("mt-0.5 h-4 w-4 shrink-0 text-brand-700", !(answering && p.id === providerId) && "invisible")} />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5">
-                          <span className="block text-sm font-medium">{providerName(p)}</span>
-                          {p.custom_key && (
-                            <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                              Your API Key
-                            </span>
-                          )}
-                        </span>
-                        <span className="block truncate text-xs text-ink-500">{p.model}</span>
+                      <Check className={cx("mt-0.5 h-4 w-4 shrink-0 text-brand-700", answering && "invisible")} />
+                      <span>
+                        <span className="block text-sm font-medium">Find passages only</span>
+                        <span className="block text-xs text-ink-500">Instant; nothing is sent to an AI model</span>
                       </span>
-                      <Badge tone={where.tone}>{where.icon}{where.text}</Badge>
                     </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettings((s) => ({ ...s, mode: "passages" }));
-                    close();
-                  }}
-                  className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-ink-100 dark:hover:bg-ink-800"
-                >
-                  <Check className={cx("mt-0.5 h-4 w-4 shrink-0 text-brand-700", answering && "invisible")} />
-                  <span>
-                    <span className="block text-sm font-medium">Find passages only</span>
-                    <span className="block text-xs text-ink-500">Instant; nothing is sent to an AI model</span>
-                  </span>
-                </button>
-                {providers.some((p) => !p.available) && (
-                  <>
-                    <p className="px-2.5 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-ink-400">Not available</p>
-                    {providers.filter((p) => !p.available).map((p) => (
-                      <div key={p.id} className="px-2.5 py-1.5 text-xs">
-                        <span className="font-medium text-ink-600 dark:text-ink-300">{providerName(p)}</span>
-                        <span className="block text-ink-400">{p.reason}</span>
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
+                  </div>
+
+                  {providers.some((p) => !p.available) && (
+                    <div className="mt-2 border-t border-ink-100 px-2 pt-2 dark:border-ink-800">
+                      <p className="pb-1 text-xs font-semibold uppercase tracking-wide text-ink-400">Not available</p>
+                      {providers.filter((p) => !p.available).map((p) => (
+                        <div key={p.id} className="py-1 text-xs">
+                          <span className="font-medium text-ink-600 dark:text-ink-300">{providerName(p)}</span>
+                          <span className="block text-ink-400">{p.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            }}
           </Popover>
 
           <Popover up width="w-80" trigger={({ open, toggle }) => (

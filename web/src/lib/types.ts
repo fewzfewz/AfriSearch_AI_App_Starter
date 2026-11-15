@@ -70,6 +70,12 @@ export interface Member {
   added_at: string;
 }
 
+export interface ProviderModel {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface Provider {
   id: string;
   label: string;
@@ -78,6 +84,7 @@ export interface Provider {
   available: boolean;
   reason: string | null;
   custom_key?: boolean;
+  models?: ProviderModel[];
 }
 
 export interface Source {

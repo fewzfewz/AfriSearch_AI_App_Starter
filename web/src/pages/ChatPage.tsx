@@ -393,6 +393,8 @@ export function ChatPage() {
     const chosen = providerOverride ?? settings.provider;
     const provider = available.some((p) => p.id === chosen) ? chosen : providers.data?.default ?? null;
     const answering = providerOverride ? true : settings.mode === "answer";
+    const selectedProviderObj = available.find((p) => p.id === provider);
+    const chosenModel = settings.model || selectedProviderObj?.model || null;
     const now = new Date().toISOString();
     const tmp = `tmp-${Date.now()}`;
     setMessages((all) => [
@@ -411,6 +413,7 @@ export function ChatPage() {
         rerank: settings.rerank,
         generate_answer: answering,
         provider: answering ? provider : null,
+        model: answering ? chosenModel : null,
         source_ids: scope.length ? scope : null,
         tags: tagScope.length ? tagScope : null,
         chat_id: ownChatId,

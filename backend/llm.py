@@ -18,7 +18,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 logger = logging.getLogger("afrisearch.llm")
@@ -98,6 +98,45 @@ def cost_usd(model: str, usage: Usage) -> float | None:
     return round((usage.input_tokens * price[0] + usage.output_tokens * price[1]) / 1_000_000, 6)
 
 
+PROVIDER_MODELS: dict[str, list[dict[str, str]]] = {
+    "gemini": [
+        {"id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash Lite", "description": "Ultra-low latency, optimal for Free & Paid keys"},
+        {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Next-gen multimodal flagship"},
+        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Highest reasoning and coding capabilities"},
+        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash", "description": "Fast production workhorse with 1M context"},
+        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro", "description": "Complex multimodal analysis with 2M context"},
+        {"id": "gemini-flash-latest", "name": "Gemini Flash (Latest)", "description": "Always routes to the newest Flash model"},
+        {"id": "gemini-pro-latest", "name": "Gemini Pro (Latest)", "description": "Always routes to the newest Pro model"},
+    ],
+    "chatgpt": [
+        {"id": "gpt-4o", "name": "GPT-4o", "description": "OpenAI flagship omni multimodal model"},
+        {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "description": "Fast, high-efficiency affordable model"},
+        {"id": "o1", "name": "OpenAI o1", "description": "Advanced reasoning for complex problem solving"},
+        {"id": "o1-mini", "name": "OpenAI o1 Mini", "description": "Fast reasoning model for math & coding"},
+        {"id": "o3-mini", "name": "OpenAI o3 Mini", "description": "Next-generation high performance reasoning"},
+        {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "description": "High performance text & vision model"},
+    ],
+    "claude": [
+        {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "description": "Anthropic's most intelligent model"},
+        {"id": "claude-3-5-haiku-latest", "name": "Claude 3.5 Haiku", "description": "Fastest Claude model with near-instant speed"},
+        {"id": "claude-3-opus-latest", "name": "Claude 3 Opus", "description": "Deep analysis and complex research tasks"},
+    ],
+    "qwen-small": [
+        {"id": "Qwen/Qwen2.5-0.5B-Instruct", "name": "Qwen 2.5 0.5B", "description": "Runs on CPU without GPU requirements"},
+        {"id": "Qwen/Qwen2.5-1.5B-Instruct", "name": "Qwen 2.5 1.5B", "description": "Higher capacity CPU model"},
+    ],
+    "qwen": [
+        {"id": "Qwen/Qwen3.8-27B", "name": "Qwen 3.8 27B", "description": "Open weights flagship (requires CUDA GPU)"},
+    ],
+    "gemma": [
+        {"id": "google/gemma-4-26B-A4B-it", "name": "Gemma 4 26B", "description": "Google open weight local architecture"},
+    ],
+    "gpt-oss": [
+        {"id": "openai/gpt-oss-20b", "name": "gpt-oss 20B", "description": "Open weights architecture"},
+    ],
+}
+
+
 @dataclass
 class Provider:
     id: str
@@ -105,10 +144,11 @@ class Provider:
     kind: str  # "api" or "local"
     model: str
     check: Callable[[], str | None]  # returns why the provider is unavailable, or None
-    generate: Callable[[str, str], str]  # (system, prompt) -> answer text
-    # (system, prompt) -> pieces of answer text as they are generated; None if the
+    generate: Callable[..., str]  # (system, prompt, model=None) -> answer text
+    # (system, prompt, model=None) -> pieces of answer text as they are generated; None if the
     # provider can only return the whole answer at once.
-    stream: Callable[[str, str], Iterator[str]] | None = None
+    stream: Callable[..., Iterator[str]] | None = None
+    models: list[dict[str, str]] = field(default_factory=list)
 
     def unavailable_reason(self) -> str | None:
         try:
@@ -118,11 +158,13 @@ class Provider:
 
     def describe(self) -> dict[str, Any]:
         reason = self.unavailable_reason()
+        raw_models = self.models or PROVIDER_MODELS.get(self.id, [{"id": self.model, "name": self.model, "description": ""}])
         return {
             "id": self.id,
             "label": self.label,
             "kind": self.kind,
             "model": self.model,
+            "models": raw_models,
             "available": reason is None,
             "reason": reason,
             "custom_key": get_request_api_key(self.id) is not None,
@@ -171,15 +213,16 @@ def _claude_check() -> str | None:
     return _missing_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
-def _claude_request(system: str, prompt: str) -> dict[str, Any]:
+def _claude_request(system: str, prompt: str, model: str | None = None) -> dict[str, Any]:
+    active_model = model or CLAUDE_MODEL
     request: dict[str, Any] = {
-        "model": CLAUDE_MODEL,
+        "model": active_model,
         "max_tokens": API_MAX_TOKENS,
         "system": system,
         "messages": [{"role": "user", "content": prompt}],
         "output_config": {"effort": CLAUDE_EFFORT},
     }
-    if CLAUDE_MODEL in CLAUDE_FALLBACK_MODELS:
+    if active_model in CLAUDE_FALLBACK_MODELS:
         # If a safety classifier declines, the API retries on Anthropic's
         # recommended fallback model instead of returning the refusal.
         request["betas"] = ["server-side-fallback-2026-07-01"]
@@ -187,12 +230,12 @@ def _claude_request(system: str, prompt: str) -> dict[str, Any]:
     return request
 
 
-def _claude_generate(system: str, prompt: str) -> str:
+def _claude_generate(system: str, prompt: str, model: str | None = None) -> str:
     import anthropic
 
     custom_key = get_request_api_key("claude")
     client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
-    response = client.beta.messages.create(**_claude_request(system, prompt))
+    response = client.beta.messages.create(**_claude_request(system, prompt, model=model))
     _record(response.usage.input_tokens, response.usage.output_tokens)
 
     if response.stop_reason == "refusal":
@@ -203,14 +246,14 @@ def _claude_generate(system: str, prompt: str) -> str:
     return text
 
 
-def _claude_stream(system: str, prompt: str) -> Iterator[str]:
+def _claude_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
     import anthropic
 
     custom_key = get_request_api_key("claude")
     client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
     produced = False
     # With fallbacks, a declined attempt continues on the fallback model in the same stream.
-    with client.beta.messages.stream(**_claude_request(system, prompt)) as stream:
+    with client.beta.messages.stream(**_claude_request(system, prompt, model=model)) as stream:
         for text in stream.text_stream:
             produced = produced or bool(text.strip())
             yield text
@@ -237,42 +280,75 @@ def _openai_check() -> str | None:
     return _missing_env("OPENAI_API_KEY")
 
 
-def _openai_generate(system: str, prompt: str) -> str:
+def _openai_generate(system: str, prompt: str, model: str | None = None) -> str:
     import openai
 
+    active_model = model or OPENAI_MODEL
     custom_key = get_request_api_key("openai")
     client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
-    response = client.responses.create(
-        model=OPENAI_MODEL,
-        instructions=system,
-        input=prompt,
-        max_output_tokens=API_MAX_TOKENS,
-    )
-    if response.usage:
-        _record(response.usage.input_tokens, response.usage.output_tokens)
-    text = (response.output_text or "").strip()
-    if not text:
-        raise ProviderError(f"ChatGPT returned no text (status: {response.status}).")
-    return text
+    try:
+        response = client.responses.create(
+            model=active_model,
+            instructions=system,
+            input=prompt,
+            max_output_tokens=API_MAX_TOKENS,
+        )
+        if response.usage:
+            _record(response.usage.input_tokens, response.usage.output_tokens)
+        text = (response.output_text or "").strip()
+        if text:
+            return text
+    except Exception:
+        # Fall back to chat.completions for standard OpenAI models
+        res = client.chat.completions.create(
+            model=active_model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            max_tokens=API_MAX_TOKENS,
+        )
+        if res.usage:
+            _record(res.usage.prompt_tokens, res.usage.completion_tokens)
+        text = (res.choices[0].message.content or "").strip()
+        if text:
+            return text
+    raise ProviderError("ChatGPT returned no text.")
 
 
-def _openai_stream(system: str, prompt: str) -> Iterator[str]:
+def _openai_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
     import openai
 
+    active_model = model or OPENAI_MODEL
     custom_key = get_request_api_key("openai")
     client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
-    events = client.responses.create(
-        model=OPENAI_MODEL, instructions=system, input=prompt, max_output_tokens=API_MAX_TOKENS, stream=True,
-    )
     produced = False
-    for event in events:
-        if event.type == "response.output_text.delta":
-            produced = produced or bool(event.delta.strip())
-            yield event.delta
-        elif event.type == "response.completed" and getattr(event.response, "usage", None):
-            _record(event.response.usage.input_tokens, event.response.usage.output_tokens)
-        elif event.type in ("response.failed", "response.incomplete", "error"):
-            raise ProviderError(f"ChatGPT stopped before finishing ({event.type.split('.')[-1]}).")
+    try:
+        events = client.responses.create(
+            model=active_model, instructions=system, input=prompt, max_output_tokens=API_MAX_TOKENS, stream=True,
+        )
+        for event in events:
+            if event.type == "response.output_text.delta":
+                produced = produced or bool(event.delta.strip())
+                yield event.delta
+            elif event.type == "response.completed" and getattr(event.response, "usage", None):
+                _record(event.response.usage.input_tokens, event.response.usage.output_tokens)
+            elif event.type in ("response.failed", "response.incomplete", "error"):
+                raise ProviderError(f"ChatGPT stopped before finishing ({event.type.split('.')[-1]}).")
+        if produced:
+            return
+    except Exception:
+        pass
+
+    # Chat completions fallback stream
+    stream_res = client.chat.completions.create(
+        model=active_model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        max_tokens=API_MAX_TOKENS,
+        stream=True,
+    )
+    for chunk in stream_res:
+        if chunk.choices and chunk.choices[0].delta.content:
+            text = chunk.choices[0].delta.content
+            produced = produced or bool(text.strip())
+            yield text
     if not produced:
         raise ProviderError("ChatGPT returned no text.")
 
@@ -304,16 +380,17 @@ def _gemini_record(response: Any) -> None:
         _record(meta.prompt_token_count, (meta.candidates_token_count or 0) + (meta.thoughts_token_count or 0))
 
 
-def _gemini_generate(system: str, prompt: str) -> str:
+def _gemini_generate(system: str, prompt: str, model: str | None = None) -> str:
     from google import genai
 
     custom_key = get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
-    models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    primary = model or GEMINI_MODEL
+    models_to_try = [primary] + [m for m in GEMINI_FALLBACK_MODELS if m != primary]
     last_err = None
-    for model in models_to_try:
+    for target_model in models_to_try:
         try:
-            response = client.models.generate_content(model=model, contents=prompt, config=_gemini_config(system))
+            response = client.models.generate_content(model=target_model, contents=prompt, config=_gemini_config(system))
             _gemini_record(response)
             text = (response.text or "").strip()
             if not text:
@@ -327,18 +404,19 @@ def _gemini_generate(system: str, prompt: str) -> str:
     raise ProviderError(f"Gemini error: {last_err}")
 
 
-def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
+def _gemini_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
     from google import genai
 
     custom_key = get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
-    models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    primary = model or GEMINI_MODEL
+    models_to_try = [primary] + [m for m in GEMINI_FALLBACK_MODELS if m != primary]
     last_err = None
-    for model in models_to_try:
+    for target_model in models_to_try:
         try:
             produced = False
             last = None
-            for chunk in client.models.generate_content_stream(model=model, contents=prompt, config=_gemini_config(system)):
+            for chunk in client.models.generate_content_stream(model=target_model, contents=prompt, config=_gemini_config(system)):
                 last = chunk
                 if chunk.text:
                     produced = produced or bool(chunk.text.strip())
@@ -623,22 +701,28 @@ def _usable(provider_id: str) -> Provider:
     return provider
 
 
-def generate(provider_id: str, system: str, prompt: str, usage: Usage | None = None) -> str:
+def generate(provider_id: str, system: str, prompt: str, usage: Usage | None = None, model: str | None = None) -> str:
     provider = _usable(provider_id)
     token = _usage.set(usage)
     try:
-        return provider.generate(system, prompt)
+        try:
+            return provider.generate(system, prompt, model=model)
+        except TypeError:
+            return provider.generate(system, prompt)
     finally:
         _usage.reset(token)
 
 
-def stream(provider_id: str, system: str, prompt: str, usage: Usage | None = None) -> Iterator[str]:
+def stream(provider_id: str, system: str, prompt: str, usage: Usage | None = None, model: str | None = None) -> Iterator[str]:
     """Yield the answer in pieces; providers that can't stream yield it whole."""
     provider = _usable(provider_id)
     if provider.stream is None:
-        yield generate(provider_id, system, prompt, usage)
+        yield generate(provider_id, system, prompt, usage, model=model)
         return
-    pieces = provider.stream(system, prompt)
+    try:
+        pieces = provider.stream(system, prompt, model=model)
+    except TypeError:
+        pieces = provider.stream(system, prompt)
     try:
         while True:
             # Each step may run on a different thread (the server iterates the stream in a

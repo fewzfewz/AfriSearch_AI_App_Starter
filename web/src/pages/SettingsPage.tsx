@@ -119,11 +119,21 @@ export function SettingsPage() {
   const [secretCopied, setSecretCopied] = useState(false);
   const [revokingKey, setRevokingKey] = useState<DeveloperApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [preferredModels, setPreferredModels] = useState<Record<string, string>>(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("afrisearch.answer-settings") || "{}");
+      return s.provider && s.model ? { [s.provider === "chatgpt" ? "openai" : s.provider]: s.model } : {};
+    } catch {
+      return {};
+    }
+  });
+  const [selectedEditingModel, setSelectedEditingModel] = useState<string>("");
 
   const handleSaveAiKey = async () => {
     if (!currentOrganization || !editingProvider || !newAiKey.trim()) return;
     setSavingAiKey(true);
     const providerToActivate = editingProvider === "openai" ? "chatgpt" : editingProvider;
+    const modelToActivate = selectedEditingModel || (editingProvider === "gemini" ? "gemini-2.5-flash-lite" : editingProvider === "openai" ? "gpt-4o" : "claude-3-5-sonnet-latest");
     try {
       await setOrganizationAIKey(currentOrganization.id, editingProvider, newAiKey.trim());
       await aiKeysApi.reload();
@@ -131,19 +141,38 @@ export function SettingsPage() {
         const stored = JSON.parse(localStorage.getItem("afrisearch.answer-settings") || "{}");
         localStorage.setItem(
           "afrisearch.answer-settings",
-          JSON.stringify({ ...stored, provider: providerToActivate, mode: "answer" })
+          JSON.stringify({ ...stored, provider: providerToActivate, model: modelToActivate, mode: "answer" })
         );
       } catch {
         // ignore storage errors
       }
+      setPreferredModels((prev) => ({ ...prev, [editingProvider]: modelToActivate }));
       window.dispatchEvent(new Event("afrisearch:providers-updated"));
       setEditingProvider(null);
       setNewAiKey("");
-      toast("AI provider key saved successfully. Enabled for Ask & Search!", "success");
+      setSelectedEditingModel("");
+      toast(`AI provider key saved and model '${modelToActivate}' activated!`, "success");
     } catch (e: any) {
       toast(e.message || "Failed to save AI key", "error");
     } finally {
       setSavingAiKey(false);
+    }
+  };
+
+  const handleSelectPreferredModel = (provider: string, modelId: string) => {
+    setPreferredModels((prev) => ({ ...prev, [provider]: modelId }));
+    try {
+      const s = JSON.parse(localStorage.getItem("afrisearch.answer-settings") || "{}");
+      localStorage.setItem("afrisearch.answer-settings", JSON.stringify({
+        ...s,
+        provider: provider === "openai" ? "chatgpt" : provider,
+        model: modelId,
+        mode: "answer",
+      }));
+      window.dispatchEvent(new Event("afrisearch:providers-updated"));
+      toast(`Active model set to ${modelId}`, "success");
+    } catch {
+      // ignore
     }
   };
 
@@ -653,9 +682,43 @@ export function SettingsPage() {
 
               <div className="divide-y divide-ink-100 rounded-xl border border-ink-200/80 dark:divide-ink-800 dark:border-ink-800 overflow-hidden">
                 {[
-                  { id: "openai", name: "OpenAI", desc: "GPT-4o, GPT-4o-mini", prefix: "sk-proj- / sk-" },
-                  { id: "claude", name: "Anthropic Claude", desc: "Claude 3.5 Sonnet, Claude 3 Opus", prefix: "sk-ant-" },
-                  { id: "gemini", name: "Google Gemini", desc: "Gemini 1.5 Pro, Gemini 1.5 Flash", prefix: "AIzaSy..." },
+                  {
+                    id: "openai",
+                    name: "OpenAI",
+                    desc: "GPT-4o, GPT-4o-mini, o1, o3-mini",
+                    prefix: "sk-proj- / sk-",
+                    models: [
+                      { id: "gpt-4o", name: "GPT-4o (Flagship Omni)" },
+                      { id: "gpt-4o-mini", name: "GPT-4o Mini (Fast & Cheap)" },
+                      { id: "o1", name: "OpenAI o1 (Deep Reasoning)" },
+                      { id: "o3-mini", name: "OpenAI o3 Mini" },
+                      { id: "gpt-4-turbo", name: "GPT-4 Turbo" },
+                    ],
+                  },
+                  {
+                    id: "claude",
+                    name: "Anthropic Claude",
+                    desc: "Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus",
+                    prefix: "sk-ant-",
+                    models: [
+                      { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet (Most Intelligent)" },
+                      { id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku (Fastest)" },
+                      { id: "claude-3-opus-latest", name: "Claude 3 Opus (Research)" },
+                    ],
+                  },
+                  {
+                    id: "gemini",
+                    name: "Google Gemini",
+                    desc: "Gemini 2.5 Flash Lite, Gemini 2.5 Flash, Gemini 2.5 Pro",
+                    prefix: "AIzaSy...",
+                    models: [
+                      { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite (Fastest & Free Tier)" },
+                      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash (Multimodal Flagship)" },
+                      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro (Deep Reasoning)" },
+                      { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash (1M Context)" },
+                      { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M Context)" },
+                    ],
+                  },
                 ].map((item) => {
                   const existingKeyHint = aiKeysApi.data?.keys?.[item.id];
                   const isEditing = editingProvider === item.id;
@@ -686,7 +749,7 @@ export function SettingsPage() {
                               </code>
                               {isOrgOwner && (
                                 <>
-                                  <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); }}>
+                                  <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); setSelectedEditingModel(item.models[0].id); }}>
                                     Update
                                   </Button>
                                   <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50" onClick={() => handleDeleteAiKey(item.id as any)}>
@@ -697,7 +760,7 @@ export function SettingsPage() {
                             </>
                           ) : (
                             isOrgOwner && (
-                              <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); }}>
+                              <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); setSelectedEditingModel(item.models[0].id); }}>
                                 Add Key
                               </Button>
                             )
@@ -705,27 +768,61 @@ export function SettingsPage() {
                         </div>
                       </div>
 
-                      {isEditing && (
-                        <div className="mt-4 rounded-xl border border-ink-200 bg-ink-50/60 p-3.5 dark:border-ink-800 dark:bg-ink-950/60">
-                          <label className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1.5">
-                            Enter your {item.name} API Key ({item.prefix})
-                          </label>
-                          <div className="flex gap-2">
-                            <input
-                              type="password"
-                              value={newAiKey}
-                              placeholder={`${item.prefix}...`}
-                              onChange={(e) => setNewAiKey(e.target.value)}
-                              className={inputClass}
-                            />
-                            <Button variant="primary" loading={savingAiKey} disabled={!newAiKey.trim()} onClick={handleSaveAiKey}>
-                              Save Encrypted
-                            </Button>
-                            <Button variant="ghost" onClick={() => setEditingProvider(null)}>
-                              Cancel
-                            </Button>
+                      {existingKeyHint && (
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-ink-50/60 p-2.5 dark:bg-ink-950/40 border border-ink-100 dark:border-ink-800/60">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium text-ink-700 dark:text-ink-300">Default Model:</span>
+                            <span className="text-xs text-ink-500">Will be used when asking questions with {item.name}</span>
                           </div>
-                          <p className="mt-2 text-[11px] text-ink-500">
+                          <select
+                            value={preferredModels[item.id] || item.models[0].id}
+                            onChange={(e) => handleSelectPreferredModel(item.id, e.target.value)}
+                            className="h-8 rounded-lg border border-ink-200 bg-white px-2.5 text-xs font-medium text-ink-800 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-200 focus:outline-none"
+                          >
+                            {item.models.map((m) => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {isEditing && (
+                        <div className="mt-4 rounded-xl border border-ink-200 bg-ink-50/60 p-3.5 dark:border-ink-800 dark:bg-ink-950/60 space-y-3">
+                          <div>
+                            <label className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1.5">
+                              Preferred Model
+                            </label>
+                            <select
+                              value={selectedEditingModel || item.models[0].id}
+                              onChange={(e) => setSelectedEditingModel(e.target.value)}
+                              className={cx(inputClass, "h-9")}
+                            >
+                              {item.models.map((m) => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1.5">
+                              Enter your {item.name} API Key ({item.prefix})
+                            </label>
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                value={newAiKey}
+                                placeholder={`${item.prefix}...`}
+                                onChange={(e) => setNewAiKey(e.target.value)}
+                                className={inputClass}
+                              />
+                              <Button variant="primary" loading={savingAiKey} disabled={!newAiKey.trim()} onClick={handleSaveAiKey}>
+                                Save Encrypted
+                              </Button>
+                              <Button variant="ghost" onClick={() => { setEditingProvider(null); setSelectedEditingModel(""); }}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-ink-500">
                             Your API key is never logged or exposed. It is encrypted in SQLite using Fernet symmetric encryption with a private machine key.
                           </p>
                         </div>
