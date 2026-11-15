@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnswerText, FileIcon, SourceCard, SourceChips } from "../components/answer";
 import { Composer, providerName, useAnswerSettings, whereItRuns } from "../components/composer";
+import { SplitReader, type ActiveReaderTarget } from "../components/SplitReader";
 import { Alert, Badge, Button, IconButton, LogoMark, MenuItem, Modal, Popover, Spinner, cx, useToast } from "../components/ui";
 import { ApiError, api, streamAsk } from "../lib/api";
 import { formatPages } from "../lib/format";
@@ -67,13 +68,14 @@ function Progress({ searching }: { searching: boolean }) {
   );
 }
 
-function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: {
+function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy, onOpenReader }: {
   message: UiMessage;
   providers: Provider[];
   onRate: (message: UiMessage, rating: "up" | "down", comment: string) => Promise<void>;
   onRetry: (question: string, providerId: string) => void;
   onAsk: (question: string) => void;
   busy: boolean;
+  onOpenReader?: (target: ActiveReaderTarget) => void;
 }) {
   const toast = useToast();
   const sources = message.data.sources ?? [];
@@ -136,7 +138,7 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: 
         )}
         {message.content && !(notCovered && !message.streaming) && (
           <div>
-            <AnswerText text={message.content} onCite={cite} activeLabel={active} sources={sources} />
+            <AnswerText text={message.content} onCite={cite} activeLabel={active} sources={sources} onOpenReader={onOpenReader} />
             {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-blink rounded-full bg-brand-600" aria-hidden="true" />}
           </div>
         )}
@@ -166,7 +168,7 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: 
             )}
             {shown.map((source) => (
               <div key={source.label} id={`${message.id}-${source.label}`} className="scroll-mt-4 animate-fade-in">
-                <SourceCard source={source} highlight={source.label === active} />
+                <SourceCard source={source} highlight={source.label === active} onOpenReader={onOpenReader} />
               </div>
             ))}
           </div>
@@ -344,6 +346,7 @@ export function ChatPage() {
   const [loadingChat, setLoadingChat] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sharedBy, setSharedBy] = useState<string | null>(null); // set when viewing someone else's shared chat
+  const [readerTarget, setReaderTarget] = useState<ActiveReaderTarget | null>(null);
   const abort = useRef<AbortController | null>(null);
   const createdHere = useRef<string | null>(null); // a chat this page just created (already on screen)
   const bottom = useRef<HTMLDivElement>(null);
@@ -362,6 +365,7 @@ export function ChatPage() {
 
   useEffect(() => {
     setSharedBy(null);
+    setReaderTarget(null);
     if (!chatId) {
       if (!createdHere.current) setMessages([]);
       createdHere.current = null;
@@ -513,117 +517,146 @@ export function ChatPage() {
   const docs = documents.data;
   const showEmpty = !chatId && messages.length === 0;
   return (
-    <div className="relative flex h-full flex-col">
-      {showEmpty && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px]" aria-hidden="true">
-          <div className="bg-glow absolute inset-0" />
-          <div className="bg-dots absolute inset-0 opacity-60" />
-        </div>
-      )}
-      <div className="relative flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 pb-8 pt-6 sm:px-6">
-          {sharedBy && (
-            <div className="mb-4">
-              <Alert tone="blue">Shared by {sharedBy} · read-only. Asking a question starts your own chat.</Alert>
-            </div>
-          )}
-          {docs && docs.stale_documents > 0 && (
-            <div className="mb-4">
-              <Alert tone="amber" action={<Link to="/app/library" className="text-sm font-medium underline">Open Library</Link>}>
-                {docs.stale_documents} document(s) need re-indexing after a search-model change and are left out of search.
-              </Alert>
-            </div>
-          )}
-          {showEmpty ? (
-            <EmptyChat documents={docs} loading={documents.loading} onAsk={ask} />
-          ) : loadingChat ? (
-            <div className="flex justify-center py-24"><Spinner /></div>
-          ) : (
-            <div className="space-y-8">
-              {messages.map((message) =>
-                message.role === "user" ? (
-                  <div key={message.id} className="flex animate-fade-in justify-end">
-                    <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-lg bg-gradient-to-br from-ink-100 to-ink-200/70 px-4 py-2.5 text-[15px] leading-6 text-ink-900 dark:from-ink-800 dark:to-ink-800/70 dark:text-ink-50">
-                      {message.content}
+    <div className="relative flex h-full w-full overflow-hidden">
+      {/* Main chat column */}
+      <div
+        className={cx(
+          "relative flex h-full min-w-0 flex-1 flex-col transition-all duration-200",
+          readerTarget && "lg:max-w-[55%] xl:max-w-[52%]"
+        )}
+      >
+        {showEmpty && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px]" aria-hidden="true">
+            <div className="bg-glow absolute inset-0" />
+            <div className="bg-dots absolute inset-0 opacity-60" />
+          </div>
+        )}
+        <div className="relative flex-1 overflow-y-auto">
+          <div className={cx("mx-auto w-full px-4 pb-8 pt-6 sm:px-6", readerTarget ? "max-w-2xl" : "max-w-3xl")}>
+            {sharedBy && (
+              <div className="mb-4">
+                <Alert tone="blue">Shared by {sharedBy} · read-only. Asking a question starts your own chat.</Alert>
+              </div>
+            )}
+            {docs && docs.stale_documents > 0 && (
+              <div className="mb-4">
+                <Alert tone="amber" action={<Link to="/app/library" className="text-sm font-medium underline">Open Library</Link>}>
+                  {docs.stale_documents} document(s) need re-indexing after a search-model change and are left out of search.
+                </Alert>
+              </div>
+            )}
+            {showEmpty ? (
+              <EmptyChat documents={docs} loading={documents.loading} onAsk={ask} />
+            ) : loadingChat ? (
+              <div className="flex justify-center py-24"><Spinner /></div>
+            ) : (
+              <div className="space-y-8">
+                {messages.map((message) =>
+                  message.role === "user" ? (
+                    <div key={message.id} className="flex animate-fade-in justify-end">
+                      <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-lg bg-gradient-to-br from-ink-100 to-ink-200/70 px-4 py-2.5 text-[15px] leading-6 text-ink-900 dark:from-ink-800 dark:to-ink-800/70 dark:text-ink-50">
+                        {message.content}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <AssistantMessage key={message.id} message={message} providers={providers.data?.providers ?? []} onRate={rate}
-                    onRetry={(question, providerId) => ask(question, providerId)} onAsk={ask} busy={busy} />
-                ),
-              )}
-              <div ref={bottom} />
-            </div>
-          )}
+                  ) : (
+                    <AssistantMessage
+                      key={message.id}
+                      message={message}
+                      providers={providers.data?.providers ?? []}
+                      onRate={rate}
+                      onRetry={(question, providerId) => ask(question, providerId)}
+                      onAsk={ask}
+                      busy={busy}
+                      onOpenReader={setReaderTarget}
+                    />
+                  ),
+                )}
+                <div ref={bottom} />
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-      <div className="relative shrink-0 px-4 pb-3 pt-2 sm:px-6">
-        <div className="mx-auto max-w-3xl">
-          {(scope.length > 0 || tagScope.length > 0) && (
-            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
-              Searching only:
-              {tagScope.map((t) => (
-                <Badge key={`tag-${t}`} tone="violet">
-                  <Tag className="h-3 w-3" />
-                  {t}
-                  <button
-                    type="button"
-                    onClick={() => setTagScope((all) => all.filter((item) => item !== t))}
-                    className="ml-0.5 hover:opacity-75"
-                    aria-label={`Remove collection ${t}`}
-                  >
-                    ×
-                  </button>
-                </Badge>
-              ))}
-              {scope.map((id) => {
-                const doc = docs?.documents.find((d) => d.source_id === id);
-                return doc ? (
-                  <Badge key={id}>
-                    <FileIcon name={doc.source_name} className="h-3 w-3" />
-                    {doc.source_name}
+        <div className="relative shrink-0 px-4 pb-3 pt-2 sm:px-6">
+          <div className={cx("mx-auto", readerTarget ? "max-w-2xl" : "max-w-3xl")}>
+            {(scope.length > 0 || tagScope.length > 0) && (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
+                Searching only:
+                {tagScope.map((t) => (
+                  <Badge key={`tag-${t}`} tone="violet">
+                    <Tag className="h-3 w-3" />
+                    {t}
                     <button
                       type="button"
-                      onClick={() => setScope((all) => all.filter((item) => item !== id))}
+                      onClick={() => setTagScope((all) => all.filter((item) => item !== t))}
                       className="ml-0.5 hover:opacity-75"
-                      aria-label={`Remove document ${doc.source_name}`}
+                      aria-label={`Remove collection ${t}`}
                     >
                       ×
                     </button>
                   </Badge>
-                ) : null;
-              })}
-              <button
-                type="button"
-                onClick={() => {
-                  setScope([]);
-                  setTagScope([]);
-                }}
-                className="ml-1 text-xs text-brand-700 hover:underline dark:text-brand-400"
-              >
-                Clear all
-              </button>
-            </div>
-          )}
-          <Composer
-            onSend={ask}
-            onStop={() => abort.current?.abort()}
-            busy={busy}
-            providers={providers.data?.providers ?? []}
-            defaultProvider={providers.data?.default ?? null}
-            documents={docs?.documents ?? []}
-            rerankAvailable={Boolean(docs?.reranker)}
-            settings={settings}
-            setSettings={setSettings}
-            scope={scope}
-            setScope={setScope}
-            tagScope={tagScope}
-            setTagScope={setTagScope}
-            autoFocus={showEmpty}
-          />
-          <p className="mt-2 text-center text-[11px] text-ink-400">AfriSearch can be wrong. Check important facts against the cited sources.</p>
+                ))}
+                {scope.map((id) => {
+                  const doc = docs?.documents.find((d) => d.source_id === id);
+                  return doc ? (
+                    <Badge key={id}>
+                      <FileIcon name={doc.source_name} className="h-3 w-3" />
+                      {doc.source_name}
+                      <button
+                        type="button"
+                        onClick={() => setScope((all) => all.filter((item) => item !== id))}
+                        className="ml-0.5 hover:opacity-75"
+                        aria-label={`Remove document ${doc.source_name}`}
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ) : null;
+                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScope([]);
+                    setTagScope([]);
+                  }}
+                  className="ml-1 text-xs text-brand-700 hover:underline dark:text-brand-400"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
+            <Composer
+              onSend={ask}
+              onStop={() => abort.current?.abort()}
+              busy={busy}
+              providers={providers.data?.providers ?? []}
+              defaultProvider={providers.data?.default ?? null}
+              documents={docs?.documents ?? []}
+              rerankAvailable={Boolean(docs?.reranker)}
+              settings={settings}
+              setSettings={setSettings}
+              scope={scope}
+              setScope={setScope}
+              tagScope={tagScope}
+              setTagScope={setTagScope}
+              autoFocus={showEmpty}
+            />
+            <p className="mt-2 text-center text-[11px] text-ink-400">AfriSearch can be wrong. Check important facts against the cited sources.</p>
+          </div>
         </div>
       </div>
+
+      {/* Split Document Reader side-pane / mobile drawer */}
+      {readerTarget && (
+        <aside
+          aria-label="Document Reader"
+          className="fixed inset-y-0 right-0 z-30 flex w-full max-w-full flex-col bg-white shadow-2xl dark:bg-ink-950 sm:w-[85%] md:w-[70%] lg:static lg:z-auto lg:h-full lg:w-[45%] lg:flex-1 lg:max-w-[48%] lg:border-l lg:border-ink-200/80 lg:shadow-none dark:lg:border-ink-800"
+        >
+          <SplitReader
+            target={readerTarget}
+            onClose={() => setReaderTarget(null)}
+          />
+        </aside>
+      )}
     </div>
   );
 }

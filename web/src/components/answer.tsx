@@ -1,11 +1,12 @@
 // An answer with clickable [S1] citations, and the source passages behind it.
-import { Copy, ExternalLink, FileCode2, FileImage, FileSpreadsheet, FileText, Presentation, ScanText } from "lucide-react";
+import { BookOpen, Copy, ExternalLink, FileCode2, FileImage, FileSpreadsheet, FileText, Presentation, ScanText } from "lucide-react";
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openDocument } from "../lib/api";
 import { formatPages, linkCitations } from "../lib/format";
 import type { Source } from "../lib/types";
+import type { ActiveReaderTarget } from "./SplitReader";
 import { Badge, Button, cx, useToast } from "./ui";
 
 const FILE_KINDS = [
@@ -43,11 +44,13 @@ function CitationBadge({
   source,
   active,
   onCite,
+  onOpenReader,
 }: {
   label: string;
   source?: Source;
   active: boolean;
   onCite: (label: string) => void;
+  onOpenReader?: (target: ActiveReaderTarget) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const toast = useToast();
@@ -92,11 +95,23 @@ function CitationBadge({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                openDocument(source.source_id, source.page).catch((err: Error) => toast(err.message, "error"));
+                if (onOpenReader) {
+                  onOpenReader({
+                    sourceId: source.source_id,
+                    sourceName: source.source_name,
+                    page: source.page,
+                    pageEnd: source.page_end,
+                    label: source.label,
+                    text: source.text,
+                    score: source.score,
+                  });
+                } else {
+                  openDocument(source.source_id, source.page).catch((err: Error) => toast(err.message, "error"));
+                }
               }}
               className="text-brand-600 hover:text-brand-700 dark:text-brand-400 font-medium flex items-center gap-1 hover:underline"
             >
-              <ExternalLink className="h-3 w-3" /> Open in reader
+              <BookOpen className="h-3 w-3" /> Read in split view
             </button>
             <span className="text-ink-400 text-[10px]">{Math.round(source.score * 100)}% match</span>
           </div>
@@ -106,11 +121,12 @@ function CitationBadge({
   );
 }
 
-export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel, sources = [] }: {
+export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel, sources = [], onOpenReader }: {
   text: string;
   onCite: (label: string) => void;
   activeLabel?: string | null;
   sources?: Source[];
+  onOpenReader?: (target: ActiveReaderTarget) => void;
 }) {
   const sourcesByLabel = new Map(sources.map((s) => [s.label, s]));
 
@@ -129,6 +145,7 @@ export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel, 
                   source={source}
                   active={activeLabel === label}
                   onCite={onCite}
+                  onOpenReader={onOpenReader}
                 />
               );
             }
@@ -177,7 +194,15 @@ export function SourceChips({ sources, active, onSelect }: { sources: Source[]; 
   );
 }
 
-export function SourceCard({ source, highlight }: { source: Source; highlight?: boolean }) {
+export function SourceCard({
+  source,
+  highlight,
+  onOpenReader,
+}: {
+  source: Source;
+  highlight?: boolean;
+  onOpenReader?: (target: ActiveReaderTarget) => void;
+}) {
   const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   const long = source.text.length > 420;
@@ -215,6 +240,26 @@ export function SourceCard({ source, highlight }: { source: Source; highlight?: 
         {expanded && source.expanded_text ? source.expanded_text : source.text}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
+        {onOpenReader && (
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<BookOpen className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400" />}
+            onClick={() =>
+              onOpenReader({
+                sourceId: source.source_id,
+                sourceName: source.source_name,
+                page: source.page ?? 1,
+                pageEnd: source.page_end ?? undefined,
+                label: source.label,
+                text: source.text,
+                score: source.score,
+              })
+            }
+          >
+            Read in split view
+          </Button>
+        )}
         {long && (
           <Button size="sm" variant="ghost" onClick={() => setExpanded((e) => !e)}>
             {expanded ? "Show less" : "Show full passage"}

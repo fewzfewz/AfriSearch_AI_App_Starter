@@ -119,14 +119,28 @@ export async function downloadFile(path: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+const blobUrlCache = new Map<string, string>();
+
+/** Get an in-memory blob URL for an uploaded document, cached for instant in-app split reading */
+export async function getDocumentBlobUrl(sourceId: string): Promise<string> {
+  const cached = blobUrlCache.get(sourceId);
+  if (cached) return cached;
+  const response = await fetch(`/api/documents/${encodeURIComponent(sourceId)}/file`, {
+    headers: await authHeaders(),
+  });
+  if (!response.ok) throw await errorFrom(response);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  blobUrlCache.set(sourceId, url);
+  return url;
+}
+
 /** Open an uploaded document in a new tab, at a page for PDFs. */
 export async function openDocument(sourceId: string, page?: number | null) {
   // Open the tab right away (inside the click), or popup blockers stop it.
   const tab = window.open("about:blank", "_blank");
   try {
-    const response = await fetch(`/api/documents/${encodeURIComponent(sourceId)}/file`, { headers: await authHeaders() });
-    if (!response.ok) throw await errorFrom(response);
-    const url = URL.createObjectURL(await response.blob());
+    const url = await getDocumentBlobUrl(sourceId);
     const target = page ? `${url}#page=${page}` : url;
     if (tab) tab.location.href = target;
     else window.open(target, "_blank");
