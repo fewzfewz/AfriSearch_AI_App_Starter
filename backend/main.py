@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, auth, billing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, auth, billing, briefing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -1136,8 +1136,18 @@ def document_outline(source_id: str, workspace: Workspace = Depends(current_work
 
 @api.get("/documents/{source_id}/summary")
 def document_summary(source_id: str, workspace: Workspace = Depends(current_workspace)):
-    summary = workspace.store.get_document_summary(source_id)
-    return {"source_id": source_id, "summary": summary}
+    summary_raw = workspace.store.get_document_summary(source_id)
+    brief = None
+    summary_text = summary_raw
+    if summary_raw:
+        try:
+            parsed = json.loads(summary_raw)
+            if isinstance(parsed, dict) and "markdown" in parsed:
+                brief = parsed
+                summary_text = parsed.get("markdown") or summary_raw
+        except Exception:
+            pass
+    return {"source_id": source_id, "summary": summary_text, "brief": brief}
 
 
 class SummarizeRequest(BaseModel):
@@ -1151,28 +1161,10 @@ def summarize_document(
     body: SummarizeRequest | None = None,
     workspace: Workspace = Depends(current_workspace),
 ):
-    """Generate an executive multi-chapter summary of the document using an AI model."""
+    """Generate an executive briefing of the document using an AI model."""
     passages = workspace.store.passages(source_id)
     if not passages:
         raise HTTPException(status_code=404, detail="Document not found or has no indexed passages.")
-
-    doc_outline = workspace.store.get_document_outline(source_id)
-    doc_name = passages[0]["source_name"]
-
-    mid = len(passages) // 2
-    sampled = passages[:3] + (passages[mid : mid + 2] if len(passages) > 6 else []) + (passages[-2:] if len(passages) > 3 else [])
-    evidence = "\n\n".join(f"[Page {p.get('page', 1)}]: {p['text']}" for p in sampled)
-    outline_text = "\n".join(f"- {item['title']} (page {item['page']})" for item in doc_outline[:25])
-
-    prompt = (
-        f"Generate a comprehensive, executive summary for the document '{doc_name}'.\n\n"
-        f"TABLE OF CONTENTS / CHAPTER OUTLINE:\n{outline_text or 'No formal outline available.'}\n\n"
-        f"KEY EXTRACTED PASSAGES:\n{evidence}\n\n"
-        "Please provide a well-structured summary including:\n"
-        "1. **Core Objective & Overview**: What this document covers.\n"
-        "2. **Key Chapters & Main Takeaways**: Highlight the main sections.\n"
-        "3. **Audience & Practical Applications**: Who should read this and what value it offers."
-    )
 
     req_provider = body.provider if body else None
     req_model = body.model if body else None
@@ -1192,15 +1184,19 @@ def summarize_document(
         aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
         api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
 
-    sys_prompt = "You are AfriSearch, an expert document research assistant creating an executive summary."
     try:
-        summary_text = llm.generate(prov, sys_prompt, prompt, model=req_model, api_key=api_key)
+        brief = briefing.generate_document_briefing(
+            workspace.store,
+            source_id,
+            provider=prov,
+            model=req_model,
+            api_key=api_key,
+        )
     except Exception as exc:
-        logger.exception("Failed to generate document summary with %s", prov)
-        raise HTTPException(status_code=502, detail=f"Summarization failed: {exc}") from exc
+        logger.exception("Failed to generate document briefing with %s", prov)
+        raise HTTPException(status_code=502, detail=f"Briefing generation failed: {exc}") from exc
 
-    workspace.store.set_document_summary(source_id, summary_text)
-    return {"source_id": source_id, "summary": summary_text}
+    return {"source_id": source_id, "summary": brief["markdown"], "brief": brief}
 
 
 class CompareRequest(BaseModel):

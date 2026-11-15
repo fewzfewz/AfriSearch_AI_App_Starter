@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -67,5 +68,30 @@ def _run(job_id: str, workspace_id: str, user_id: str, full: bool) -> None:
     else:
         db.update_job(job_id, status="done", result=result, progress={"stage": "done"})
         notify(workspace_id, user_id, result, time.monotonic() - started)
+
+        # Automatically generate executive briefings in the background for newly added documents
+        new_sids = result.get("new_source_ids", [])
+        if new_sids:
+            threading.Thread(
+                target=_auto_summarize_docs,
+                args=(workspace_id, new_sids),
+                name=f"auto-brief-{job_id}",
+                daemon=True,
+            ).start()
     finally:
         _futures.pop(job_id, None)
+
+
+def _auto_summarize_docs(workspace_id: str, source_ids: list[str]) -> None:
+    """Automatically generate executive briefings for newly indexed documents."""
+    from backend import briefing
+    try:
+        st = store.get_store(workspace_id)
+        for sid in source_ids:
+            try:
+                briefing.generate_document_briefing(st, sid)
+                logger.info("Auto-generated executive brief for %s in workspace %s", sid, workspace_id)
+            except Exception:
+                logger.warning("Auto-summarization skipped or failed for %s", sid, exc_info=True)
+    except Exception:
+        logger.warning("Auto-summarization thread encountered error", exc_info=True)

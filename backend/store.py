@@ -230,7 +230,7 @@ class DocumentStore:
             try:
                 data = json.loads(self.summaries_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    return {str(k): str(v) for k, v in data.items() if v}
+                    return {str(k): (json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else str(v)) for k, v in data.items() if v}
             except (OSError, ValueError):
                 return {}
         return {}
@@ -241,9 +241,9 @@ class DocumentStore:
     def get_document_summary(self, source_id: str) -> str | None:
         return self.load_summaries().get(source_id)
 
-    def set_document_summary(self, source_id: str, summary: str) -> None:
+    def set_document_summary(self, source_id: str, summary: str | dict[str, Any]) -> None:
         summaries = self.load_summaries()
-        summaries[source_id] = summary
+        summaries[source_id] = json.dumps(summary, ensure_ascii=False) if isinstance(summary, dict) else str(summary)
         self.save_summaries(summaries)
 
     def uploaded_files(self) -> list[Path]:
@@ -398,8 +398,15 @@ class DocumentStore:
             total = len(self.chunks)
 
         new_docs = sorted({item["source_name"] for item in new_chunks})
+        new_source_ids = sorted({item["source_id"] for item in new_chunks})
         logger.info("Index %s: %d chunks, %d new documents, %d failed", self.dir.name, total, len(new_docs), len(failed))
-        return {"indexed_chunks": total, "new_chunks": len(new_chunks), "new_documents": new_docs, "failed": failed}
+        return {
+            "indexed_chunks": total,
+            "new_chunks": len(new_chunks),
+            "new_documents": new_docs,
+            "new_source_ids": new_source_ids,
+            "failed": failed,
+        }
 
     def remove(self, source_id: str) -> int:
         """Delete an uploaded file and drop its chunks from the index without re-embedding."""

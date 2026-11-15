@@ -1,10 +1,12 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
-  AlertCircle, BookOpen, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, ListTree, Loader2, MessageSquare, MoreHorizontal,
+  AlertCircle, ArrowRight, BookOpen, Camera, CheckCircle2, Copy, Download, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, HelpCircle, ListTree, Loader2, MessageSquare, MoreHorizontal,
   Plus, RefreshCw, ScanText, Search, Sparkles, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { FileTile } from "../components/answer";
 import { DocumentCompareModal } from "../components/DocumentCompareModal";
 import {
@@ -18,6 +20,14 @@ import type { DocumentInfo, DocumentsResponse, FailedFile, Job, OutlineItem, Pas
 import { useWorkspace } from "../lib/workspace";
 
 const PAGE_SIZE = 50;
+
+function downloadBlob(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement("a"), { href: url, download: filename });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 function ProgressBar({ value }: { value: number | null }) {
   return (
@@ -113,12 +123,24 @@ function DropZone({ onFiles, accept, maxMb, disabled, compact }: {
   );
 }
 
+interface ExecutiveBrief {
+  headline?: string;
+  summary?: string;
+  takeaways?: string[];
+  structure?: string[];
+  suggested_questions?: string[];
+  markdown?: string;
+  created_at?: string;
+  provider?: string;
+  model?: string;
+}
+
 function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: () => void }) {
   const { data, loading, error } = useApi<{ passages: Passage[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/passages` : null);
   const { data: outlineData } = useApi<{ outline: OutlineItem[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/outline` : null);
-  const { data: summaryData, reload: reloadSummary } = useApi<{ summary: string | null }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/summary` : null);
+  const { data: summaryData, reload: reloadSummary } = useApi<{ summary: string | null; brief?: ExecutiveBrief | null }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/summary` : null);
 
-  const [activeTab, setActiveTab] = useState<"outline" | "passages" | "summary">("outline");
+  const [activeTab, setActiveTab] = useState<"summary" | "outline" | "passages">("summary");
   const [selectedChapter, setSelectedChapter] = useState<OutlineItem | null>(null);
   const [query, setQuery] = useState("");
   const [summarizing, setSummarizing] = useState(false);
@@ -126,14 +148,27 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
   const navigate = useNavigate();
 
   const outline = outlineData?.outline ?? doc?.outline ?? [];
-  const summary = summaryData?.summary ?? doc?.summary;
+  const rawSummary = summaryData?.summary ?? doc?.summary;
+  const brief: ExecutiveBrief | null = (() => {
+    if (summaryData?.brief) return summaryData.brief;
+    if (!rawSummary) return null;
+    try {
+      const parsed = JSON.parse(rawSummary);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  })();
+  const markdownText = brief?.markdown || rawSummary || "";
 
   useEffect(() => {
     if (doc) {
       setSelectedChapter(null);
       setQuery("");
-      // Default to outline if available, otherwise passages
-      if (doc.outline && doc.outline.length > 0) {
+      // Default to Executive Briefing if available, otherwise outline or passages
+      if (doc.summary) {
+        setActiveTab("summary");
+      } else if (doc.outline && doc.outline.length > 0) {
         setActiveTab("outline");
       } else {
         setActiveTab("passages");
@@ -191,6 +226,19 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
       <div className="flex items-center gap-1 border-b border-ink-200 pb-2 mb-4 text-xs font-medium dark:border-ink-800">
         <button
           type="button"
+          onClick={() => setActiveTab("summary")}
+          className={cx(
+            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
+            activeTab === "summary"
+              ? "bg-brand-500/10 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300 font-semibold"
+              : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800"
+          )}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-brand-500" />
+          <span>Executive Briefing {brief ? "✨" : ""}</span>
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab("outline")}
           className={cx(
             "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
@@ -214,19 +262,6 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
         >
           <TextQuote className="h-3.5 w-3.5" />
           <span>Passages ({data?.passages?.length ?? doc?.passages ?? 0})</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("summary")}
-          className={cx(
-            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
-            activeTab === "summary"
-              ? "bg-brand-500/10 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300 font-semibold"
-              : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800"
-          )}
-        >
-          <Sparkles className="h-3.5 w-3.5 text-brand-500" />
-          <span>AI Summary</span>
         </button>
       </div>
 
@@ -341,35 +376,144 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
         </>
       )}
 
-      {/* Tab 3: Executive Summary */}
+      {/* Tab: Executive Briefing */}
       {activeTab === "summary" && (
         <div className="space-y-4">
-          {summary ? (
-            <div className="rounded-xl border border-ink-200 bg-ink-50/30 p-4 dark:border-ink-800 dark:bg-ink-800/20">
-              <div className="flex items-center justify-between mb-3 border-b border-ink-100 pb-2 dark:border-ink-700/60">
-                <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  AI Executive Summary
-                </span>
-                <button
-                  type="button"
-                  onClick={handleGenerateSummary}
-                  disabled={summarizing}
-                  className="text-xs text-ink-500 hover:text-ink-700 underline dark:hover:text-ink-300"
-                >
-                  {summarizing ? "Regenerating..." : "Regenerate"}
-                </button>
+          {markdownText ? (
+            <div className="space-y-4 animate-fade-in">
+              {/* Briefing Top Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 pb-2.5 dark:border-ink-800">
+                <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-300">
+                  <Sparkles className="h-4 w-4 text-brand-600" />
+                  <span>Executive Intelligence Briefing</span>
+                  {brief?.provider && (
+                    <Badge tone="gray">via {brief.provider}</Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Copy className="h-3 w-3" />}
+                    onClick={() => navigator.clipboard.writeText(markdownText).then(() => toast("Executive brief copied"))}
+                    title="Copy full brief"
+                  >
+                    Copy
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Download className="h-3 w-3" />}
+                    onClick={() => downloadBlob(`${doc?.source_name ?? "document"}-brief.md`, markdownText, "text/markdown")}
+                    title="Download Markdown"
+                  >
+                    .md
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<MessageSquare className="h-3 w-3 text-brand-600" />}
+                    onClick={() => {
+                      onClose();
+                      navigate("/app", {
+                        state: {
+                          question: `Summarize the strategic implications of ${doc?.source_name}`,
+                          scope: [doc!.source_id],
+                        },
+                      });
+                    }}
+                    title="Ask follow-up questions in Chat"
+                  >
+                    Discuss in Chat
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={handleGenerateSummary}
+                    disabled={summarizing}
+                    className="text-xs text-ink-500 hover:text-ink-800 underline dark:hover:text-ink-200 ml-1"
+                  >
+                    {summarizing ? "Regenerating..." : "Regenerate"}
+                  </button>
+                </div>
               </div>
-              <div className="whitespace-pre-line text-sm leading-6 text-ink-800 dark:text-ink-200">
-                {summary}
+
+              {/* Executive One-Liner Headline */}
+              {brief?.headline && (
+                <div className="rounded-2xl border border-brand-200/90 bg-gradient-to-r from-brand-50/90 to-brand-100/40 p-4 shadow-soft dark:border-brand-900/60 dark:from-brand-950/60 dark:to-brand-900/30">
+                  <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-300 mb-1">
+                    <Sparkles className="h-3 w-3" /> One-Liner Executive Thesis
+                  </span>
+                  <p className="text-sm font-semibold leading-relaxed text-ink-900 dark:text-ink-50">
+                    "{brief.headline}"
+                  </p>
+                </div>
+              )}
+
+              {/* Suggested Questions to Ask */}
+              {brief?.suggested_questions && brief.suggested_questions.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-ink-500 dark:text-ink-400 flex items-center gap-1.5">
+                    <HelpCircle className="h-3.5 w-3.5 text-brand-600" /> Suggested Questions to Ask
+                  </span>
+                  <div className="flex flex-col gap-1.5">
+                    {brief.suggested_questions.map((q, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          navigate("/app", {
+                            state: {
+                              question: q,
+                              scope: [doc!.source_id],
+                            },
+                          });
+                        }}
+                        className="group flex items-center justify-between gap-2 rounded-xl border border-ink-200/80 bg-white p-2.5 text-left text-xs text-ink-800 shadow-soft transition hover:-translate-y-0.5 hover:border-brand-400 hover:bg-brand-50/50 hover:text-brand-900 dark:border-ink-800 dark:bg-ink-900 dark:text-ink-200 dark:hover:border-brand-700 dark:hover:bg-brand-950/30"
+                      >
+                        <span className="font-medium">{q}</span>
+                        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-ink-400 transition group-hover:translate-x-0.5 group-hover:text-brand-600" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Key Takeaways & Core Findings */}
+              {brief?.takeaways && brief.takeaways.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-ink-500 dark:text-ink-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Key Takeaways & Core Findings
+                  </span>
+                  <div className="space-y-1.5">
+                    {brief.takeaways.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start gap-2.5 rounded-xl border border-ink-200/70 bg-ink-50/40 p-3 text-xs leading-relaxed text-ink-800 dark:border-ink-800/80 dark:bg-ink-900/40 dark:text-ink-200"
+                      >
+                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-[10px]">✓</span>
+                        <div className="flex-1">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item}</ReactMarkdown>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Full Executive Brief Prose */}
+              <div className="rounded-xl border border-ink-200 bg-white p-4 shadow-soft dark:border-ink-800 dark:bg-ink-900/60 prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {brief?.summary ? `### Executive Summary\n${brief.summary}\n\n${brief.structure ? `### Structure & Core Themes\n${brief.structure.join("\n\n")}` : ""}` : markdownText}
+                </ReactMarkdown>
               </div>
             </div>
           ) : (
             <div className="py-12 text-center">
               <Sparkles className="mx-auto mb-3 h-10 w-10 text-brand-500 opacity-80" />
-              <h4 className="text-base font-semibold text-ink-900 dark:text-ink-100">No Executive Summary Yet</h4>
+              <h4 className="text-base font-semibold text-ink-900 dark:text-ink-100">No Executive Briefing Yet</h4>
               <p className="mt-1 max-w-sm mx-auto text-xs text-ink-500">
-                Generate an AI-powered executive summary synthesizing the core themes, chapter breakdown, and key takeaways across this document.
+                Generate an AI-powered executive briefing with thesis headline, key takeaways, chapter structure, and suggested inquiries.
               </p>
               <div className="mt-5">
                 <Button
@@ -377,7 +521,7 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
                   loading={summarizing}
                   icon={<Sparkles className="h-4 w-4" />}
                 >
-                  Generate Executive Summary
+                  Generate Executive Briefing
                 </Button>
               </div>
             </div>
@@ -1022,6 +1166,19 @@ export function LibraryPage() {
                             <span className="flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
                               {doc.type.toUpperCase()}
                               {doc.ocr && <Badge tone="blue"><ScanText className="h-3 w-3" />OCR</Badge>}
+                              {doc.summary && (
+                                <span
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewing(doc);
+                                  }}
+                                  title="Executive Briefing Ready"
+                                  className="inline-flex cursor-pointer items-center gap-0.5 rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                                >
+                                  <Sparkles className="h-2.5 w-2.5 text-amber-600" />
+                                  Brief
+                                </span>
+                              )}
                               {(doc.tags ?? []).map((t) => (
                                 <span
                                   key={t}
@@ -1048,6 +1205,7 @@ export function LibraryPage() {
                         )}>
                           {(close) => (
                             <>
+                              <MenuItem icon={<Sparkles className="h-4 w-4 text-brand-600" />} onClick={() => { close(); setViewing(doc); }}>Executive briefing</MenuItem>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
                               <MenuItem icon={<GitCompare className="h-4 w-4" />} onClick={() => { close(); setSelected([doc.source_id]); setComparing(true); }}>Compare documents</MenuItem>
                               {canTag && <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>}
