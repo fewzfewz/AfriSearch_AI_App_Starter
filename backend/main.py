@@ -59,6 +59,15 @@ async def lifespan(app: FastAPI):
     auth.validate_auth_config()
     billing.validate_billing_config()
     db.fail_interrupted_jobs()
+    try:
+        with db.connect() as conn:
+            row = conn.execute("SELECT organization_id FROM organization_ai_keys LIMIT 1").fetchone()
+            if row:
+                byok = db.get_all_raw_organization_ai_keys(row["organization_id"])
+                if byok:
+                    llm.set_request_api_keys(byok)
+    except Exception:
+        pass
     if os.getenv("AFRISEARCH_PRELOAD_MODELS", "1") != "0":
         threading.Thread(target=preload_models, name="preload", daemon=True).start()  # don't delay startup
     yield
@@ -840,6 +849,7 @@ def delete_organization_ai_key(org_id: str, provider: str, user: User = Depends(
     if org.get("role") not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Only organization owners and admins can remove AI provider keys.")
     deleted = db.delete_organization_ai_key(org_id, provider)
+    llm.clear_request_api_keys(provider)
     return {"status": "ok" if deleted else "not_found", "provider": provider}
 
 
@@ -1207,6 +1217,7 @@ class PreparedAsk:
     history: list[dict[str, str]]
     sources: list[dict[str, Any]]
     covered: bool
+    api_key: str | None = None
 
 
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
@@ -1218,13 +1229,23 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         if user_orgs:
             org_id = user_orgs[0]["id"]
 
-    if org_id:
-        byok_keys = db.get_all_raw_organization_ai_keys(org_id)
-        if byok_keys:
-            llm.set_request_api_keys(byok_keys)
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+    if byok_keys:
+        llm.set_request_api_keys(byok_keys)
     provider = choose_provider(request)
+    provider_api_key = None
+    if provider and byok_keys:
+        aliases = {
+            "chatgpt": "openai",
+            "openai": "chatgpt",
+            "claude": "anthropic",
+            "anthropic": "claude",
+            "gemini": "google",
+            "google": "gemini",
+        }
+        provider_api_key = byok_keys.get(provider) or byok_keys.get(aliases.get(provider, ""))
     if provider and check_available:
-        reason = llm.PROVIDERS[provider].unavailable_reason()
+        reason = llm.PROVIDERS[provider].unavailable_reason(api_key=provider_api_key)
         if reason:
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
     if org_id:
@@ -1260,7 +1281,14 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
     covered = answers.is_covered(sources)
     # When nothing is good enough, all closest passages are shown; otherwise only
     # the ones close to the best, which are also all the model gets to see.
-    return PreparedAsk(provider, chat, history, answers.focus(sources) if covered else sources, covered)
+    return PreparedAsk(
+        provider,
+        chat,
+        history,
+        answers.focus(sources) if covered else sources,
+        covered,
+        api_key=provider_api_key,
+    )
 
 
 def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]:
@@ -1332,8 +1360,15 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
     usage = llm.Usage()
     if prepared.provider:
         try:
-            answer = answers.generate_answer(request.question, prepared.sources, prepared.provider,
-                                             prepared.history, usage, model=request.model)
+            answer = answers.generate_answer(
+                request.question,
+                prepared.sources,
+                prepared.provider,
+                prepared.history,
+                usage,
+                model=request.model,
+                api_key=prepared.api_key,
+            )
         except llm.ProviderError as exc:
             account_usage(workspace, prepared.provider, usage)  # a refusal may still be billed
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1398,7 +1433,14 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                 yield event("token", text=canned)
             else:
                 prompt = answers.build_prompt(request.question, prepared.sources, prepared.history)
-                for piece in llm.stream(prepared.provider, answers.SYSTEM_PROMPT, prompt, usage, model=request.model):
+                for piece in llm.stream(
+                    prepared.provider,
+                    answers.SYSTEM_PROMPT,
+                    prompt,
+                    usage,
+                    model=request.model,
+                    api_key=prepared.api_key,
+                ):
                     pieces.append(piece)
                     yield event("token", text=piece)
         except Exception as exc:

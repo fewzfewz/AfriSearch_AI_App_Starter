@@ -42,19 +42,40 @@ class Usage:
 # The Usage of the answer being generated; provider functions add to it.
 _usage: contextvars.ContextVar[Usage | None] = contextvars.ContextVar("usage", default=None)
 _request_keys: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar("request_keys", default=None)
+_fallback_keys: dict[str, str] = {}
+_fallback_lock = threading.Lock()
 
 
 def set_request_api_keys(keys: dict[str, str] | None) -> None:
     _request_keys.set(keys)
+    if keys:
+        with _fallback_lock:
+            _fallback_keys.update(keys)
+
+
+def clear_request_api_keys(provider: str | None = None) -> None:
+    _request_keys.set(None)
+    with _fallback_lock:
+        if provider:
+            prov = provider.lower()
+            _fallback_keys.pop(provider, None)
+            _fallback_keys.pop(prov, None)
+            aliases = {
+                "chatgpt": "openai",
+                "openai": "chatgpt",
+                "claude": "anthropic",
+                "anthropic": "claude",
+                "gemini": "google",
+                "google": "gemini",
+            }
+            alt = aliases.get(prov)
+            if alt:
+                _fallback_keys.pop(alt, None)
+        else:
+            _fallback_keys.clear()
 
 
 def get_request_api_key(provider: str) -> str | None:
-    keys = _request_keys.get()
-    if not keys:
-        return None
-    val = keys.get(provider)
-    if val:
-        return val
     aliases = {
         "chatgpt": "openai",
         "openai": "chatgpt",
@@ -63,8 +84,25 @@ def get_request_api_key(provider: str) -> str | None:
         "gemini": "google",
         "google": "gemini",
     }
-    alt = aliases.get(provider.lower())
-    return keys.get(alt) if alt else None
+    prov = provider.lower()
+    alt = aliases.get(prov)
+
+    keys = _request_keys.get()
+    if keys:
+        val = keys.get(provider) or keys.get(prov)
+        if val:
+            return val
+        if alt and keys.get(alt):
+            return keys.get(alt)
+
+    with _fallback_lock:
+        val = _fallback_keys.get(provider) or _fallback_keys.get(prov)
+        if val:
+            return val
+        if alt and _fallback_keys.get(alt):
+            return _fallback_keys.get(alt)
+
+    return None
 
 
 def _record(input_tokens: int | None, output_tokens: int | None) -> None:
@@ -150,9 +188,14 @@ class Provider:
     stream: Callable[..., Iterator[str]] | None = None
     models: list[dict[str, str]] = field(default_factory=list)
 
-    def unavailable_reason(self) -> str | None:
+    def unavailable_reason(self, api_key: str | None = None) -> str | None:
         try:
-            return self.check()
+            return self.check(api_key=api_key)
+        except TypeError:
+            try:
+                return self.check()
+            except Exception as exc:
+                return str(exc)
         except Exception as exc:  # e.g. torch import failure
             return str(exc)
 
@@ -204,11 +247,11 @@ CLAUDE_EFFORT = os.getenv("AFRISEARCH_CLAUDE_EFFORT", "medium")
 CLAUDE_FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 
 
-def _claude_check() -> str | None:
+def _claude_check(api_key: str | None = None) -> str | None:
     pkg = _missing_package("anthropic", "anthropic")
     if pkg:
         return pkg
-    if get_request_api_key("claude"):
+    if api_key or get_request_api_key("claude"):
         return None
     return _missing_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
@@ -230,10 +273,10 @@ def _claude_request(system: str, prompt: str, model: str | None = None) -> dict[
     return request
 
 
-def _claude_generate(system: str, prompt: str, model: str | None = None) -> str:
+def _claude_generate(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> str:
     import anthropic
 
-    custom_key = get_request_api_key("claude")
+    custom_key = api_key or get_request_api_key("claude")
     client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
     response = client.beta.messages.create(**_claude_request(system, prompt, model=model))
     _record(response.usage.input_tokens, response.usage.output_tokens)
@@ -246,10 +289,10 @@ def _claude_generate(system: str, prompt: str, model: str | None = None) -> str:
     return text
 
 
-def _claude_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
+def _claude_stream(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> Iterator[str]:
     import anthropic
 
-    custom_key = get_request_api_key("claude")
+    custom_key = api_key or get_request_api_key("claude")
     client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
     produced = False
     # With fallbacks, a declined attempt continues on the fallback model in the same stream.
@@ -271,20 +314,20 @@ def _claude_stream(system: str, prompt: str, model: str | None = None) -> Iterat
 OPENAI_MODEL = os.getenv("AFRISEARCH_OPENAI_MODEL", "gpt-6.1-sol")
 
 
-def _openai_check() -> str | None:
+def _openai_check(api_key: str | None = None) -> str | None:
     pkg = _missing_package("openai", "openai")
     if pkg:
         return pkg
-    if get_request_api_key("openai"):
+    if api_key or get_request_api_key("openai"):
         return None
     return _missing_env("OPENAI_API_KEY")
 
 
-def _openai_generate(system: str, prompt: str, model: str | None = None) -> str:
+def _openai_generate(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> str:
     import openai
 
     active_model = model or OPENAI_MODEL
-    custom_key = get_request_api_key("openai")
+    custom_key = api_key or get_request_api_key("openai")
     client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
     try:
         response = client.responses.create(
@@ -313,11 +356,11 @@ def _openai_generate(system: str, prompt: str, model: str | None = None) -> str:
     raise ProviderError("ChatGPT returned no text.")
 
 
-def _openai_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
+def _openai_stream(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> Iterator[str]:
     import openai
 
     active_model = model or OPENAI_MODEL
-    custom_key = get_request_api_key("openai")
+    custom_key = api_key or get_request_api_key("openai")
     client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
     produced = False
     try:
@@ -359,11 +402,11 @@ GEMINI_MODEL = os.getenv("AFRISEARCH_GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest"]
 
 
-def _gemini_check() -> str | None:
+def _gemini_check(api_key: str | None = None) -> str | None:
     pkg = _missing_package("google.genai", "google-genai")
     if pkg:
         return pkg
-    if get_request_api_key("gemini"):
+    if api_key or get_request_api_key("gemini"):
         return None
     return _missing_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
@@ -380,10 +423,10 @@ def _gemini_record(response: Any) -> None:
         _record(meta.prompt_token_count, (meta.candidates_token_count or 0) + (meta.thoughts_token_count or 0))
 
 
-def _gemini_generate(system: str, prompt: str, model: str | None = None) -> str:
+def _gemini_generate(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> str:
     from google import genai
 
-    custom_key = get_request_api_key("gemini")
+    custom_key = api_key or get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
     primary = model or GEMINI_MODEL
     models_to_try = [primary] + [m for m in GEMINI_FALLBACK_MODELS if m != primary]
@@ -404,10 +447,10 @@ def _gemini_generate(system: str, prompt: str, model: str | None = None) -> str:
     raise ProviderError(f"Gemini error: {last_err}")
 
 
-def _gemini_stream(system: str, prompt: str, model: str | None = None) -> Iterator[str]:
+def _gemini_stream(system: str, prompt: str, model: str | None = None, api_key: str | None = None) -> Iterator[str]:
     from google import genai
 
-    custom_key = get_request_api_key("gemini")
+    custom_key = api_key or get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
     primary = model or GEMINI_MODEL
     models_to_try = [primary] + [m for m in GEMINI_FALLBACK_MODELS if m != primary]
@@ -691,38 +734,58 @@ def default_provider() -> str | None:
     return next((p.id for p in PROVIDERS.values() if p.unavailable_reason() is None), None)
 
 
-def _usable(provider_id: str) -> Provider:
+def _usable(provider_id: str, api_key: str | None = None) -> Provider:
     provider = PROVIDERS.get(provider_id)
     if provider is None:
         raise KeyError(provider_id)
-    reason = provider.unavailable_reason()
+    reason = provider.unavailable_reason(api_key=api_key)
     if reason:
         raise ProviderError(f"{provider.label} is not available: {reason}")
     return provider
 
 
-def generate(provider_id: str, system: str, prompt: str, usage: Usage | None = None, model: str | None = None) -> str:
-    provider = _usable(provider_id)
+def generate(
+    provider_id: str,
+    system: str,
+    prompt: str,
+    usage: Usage | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    provider = _usable(provider_id, api_key=api_key)
     token = _usage.set(usage)
     try:
         try:
-            return provider.generate(system, prompt, model=model)
+            return provider.generate(system, prompt, model=model, api_key=api_key)
         except TypeError:
-            return provider.generate(system, prompt)
+            try:
+                return provider.generate(system, prompt, model=model)
+            except TypeError:
+                return provider.generate(system, prompt)
     finally:
         _usage.reset(token)
 
 
-def stream(provider_id: str, system: str, prompt: str, usage: Usage | None = None, model: str | None = None) -> Iterator[str]:
+def stream(
+    provider_id: str,
+    system: str,
+    prompt: str,
+    usage: Usage | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+) -> Iterator[str]:
     """Yield the answer in pieces; providers that can't stream yield it whole."""
-    provider = _usable(provider_id)
+    provider = _usable(provider_id, api_key=api_key)
     if provider.stream is None:
-        yield generate(provider_id, system, prompt, usage, model=model)
+        yield generate(provider_id, system, prompt, usage, model=model, api_key=api_key)
         return
     try:
-        pieces = provider.stream(system, prompt, model=model)
+        pieces = provider.stream(system, prompt, model=model, api_key=api_key)
     except TypeError:
-        pieces = provider.stream(system, prompt)
+        try:
+            pieces = provider.stream(system, prompt, model=model)
+        except TypeError:
+            pieces = provider.stream(system, prompt)
     try:
         while True:
             # Each step may run on a different thread (the server iterates the stream in a
