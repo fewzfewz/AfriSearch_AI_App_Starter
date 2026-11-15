@@ -41,6 +41,31 @@ def test_byok_keys_crud(client, app_env):
     assert "openai" not in res.json()["keys"]
 
 
+def test_providers_reflect_byok_keys(client, app_env):
+    setup_local_user()
+    org = db.create_organization("BYOK Provider Org", "local")
+
+    # Before adding key, chatgpt is not available without env var
+    res_before = client.get("/providers", headers={"X-Organization-Id": org["id"]})
+    assert res_before.status_code == 200
+    providers_before = {p["id"]: p for p in res_before.json()["providers"]}
+    assert providers_before["chatgpt"]["available"] is False
+
+    # Add custom key
+    set_res = client.post(
+        f"/organizations/{org['id']}/ai-keys",
+        json={"provider": "openai", "api_key": "sk-proj-testcustomapikey1234567890"},
+    )
+    assert set_res.status_code == 200
+
+    # Now /providers reflects chatgpt as available!
+    res_after = client.get("/providers", headers={"X-Organization-Id": org["id"]})
+    assert res_after.status_code == 200
+    providers_after = {p["id"]: p for p in res_after.json()["providers"]}
+    assert providers_after["chatgpt"]["available"] is True
+    assert providers_after["chatgpt"]["reason"] is None
+
+
 def test_developer_api_key_gating_and_lifecycle(client, app_env):
     setup_local_user()
     org = db.create_organization("API Key Org", "local")

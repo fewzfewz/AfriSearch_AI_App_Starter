@@ -50,7 +50,21 @@ def set_request_api_keys(keys: dict[str, str] | None) -> None:
 
 def get_request_api_key(provider: str) -> str | None:
     keys = _request_keys.get()
-    return keys.get(provider) if keys else None
+    if not keys:
+        return None
+    val = keys.get(provider)
+    if val:
+        return val
+    aliases = {
+        "chatgpt": "openai",
+        "openai": "chatgpt",
+        "claude": "anthropic",
+        "anthropic": "claude",
+        "gemini": "google",
+        "google": "gemini",
+    }
+    alt = aliases.get(provider.lower())
+    return keys.get(alt) if alt else None
 
 
 def _record(input_tokens: int | None, output_tokens: int | None) -> None:

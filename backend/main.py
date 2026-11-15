@@ -483,7 +483,28 @@ def delete_my_account(body: DeleteAccountRequest, user: User = Depends(current_u
 
 
 @api.get("/providers")
-def list_providers(user: User = Depends(current_user)):
+def list_providers(
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+):
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+
+    org_id = None
+    if user.api_key_record:
+        org_id = user.api_key_record.get("organization_id")
+    elif x_organization_id:
+        org_id = x_organization_id
+    else:
+        user_orgs = db.list_user_organizations(user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+
+    if org_id:
+        byok_keys = db.get_all_raw_organization_ai_keys(org_id)
+        if byok_keys:
+            llm.set_request_api_keys(byok_keys)
+
     return {
         "providers": [provider.describe() for provider in llm.PROVIDERS.values()],
         "default": llm.default_provider(),
