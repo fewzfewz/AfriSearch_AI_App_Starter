@@ -157,6 +157,33 @@ class AcceptInvitationRequest(BaseModel):
     token: str = Field(min_length=10, max_length=256)
 
 
+class SetOrganizationAIKeyRequest(BaseModel):
+    provider: Literal["openai", "claude", "gemini"]
+    api_key: str = Field(min_length=10, max_length=500)
+
+
+class CreateDeveloperApiKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    workspace_id: str | None = None
+
+
+class V1AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    workspace_id: str | None = None
+    top_k: int = 5
+    rerank: bool = True
+    provider: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class V1SearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    workspace_id: str | None = None
+    top_k: int = 5
+    rerank: bool = True
+    tags: list[str] = Field(default_factory=list)
+
+
 # --- workspaces ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -234,6 +261,36 @@ def current_workspace(
     x_workspace_id: str | None = Header(default=None),
 ) -> Workspace:
     """FastAPI dependency: the workspace named in X-Workspace-Id, or the first workspace in the active organization."""
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+    if not isinstance(x_workspace_id, str):
+        x_workspace_id = None
+
+    if user.api_key_record:
+        key_org_id = user.api_key_record["organization_id"]
+        key_ws_id = user.api_key_record.get("workspace_id")
+        target_ws_id = x_workspace_id or key_ws_id
+        if key_ws_id and x_workspace_id and x_workspace_id != key_ws_id:
+            raise HTTPException(status_code=403, detail="API key is restricted to a different workspace.")
+
+        if target_ws_id:
+            found = db.get_workspace(target_ws_id, user.id, organization_id=key_org_id)
+            if not found:
+                raise HTTPException(status_code=404, detail="Workspace not found.")
+        else:
+            workspaces = user_workspaces(user, organization_id=key_org_id)
+            if not workspaces:
+                raise HTTPException(status_code=404, detail="No workspaces found.")
+            found = workspaces[0]
+
+        return Workspace(
+            id=found["id"],
+            name=found["name"],
+            role=found["role"],
+            user=user,
+            organization_id=found.get("organization_id") or key_org_id,
+        )
+
     if x_workspace_id:
         found = db.get_workspace(x_workspace_id, user.id, organization_id=x_organization_id)
         if not found:
@@ -728,6 +785,83 @@ def list_organization_invoices(
     return {"invoices": invoices}
 
 
+@api.get("/organizations/{org_id}/ai-keys")
+def get_organization_ai_keys(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can view AI provider keys.")
+    return {"keys": db.get_organization_ai_keys(org_id)}
+
+
+@api.post("/organizations/{org_id}/ai-keys")
+def set_organization_ai_key(org_id: str, body: SetOrganizationAIKeyRequest, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can configure AI provider keys.")
+    try:
+        return db.set_organization_ai_key(org_id, body.provider, body.api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@api.delete("/organizations/{org_id}/ai-keys/{provider}")
+def delete_organization_ai_key(org_id: str, provider: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can remove AI provider keys.")
+    deleted = db.delete_organization_ai_key(org_id, provider)
+    return {"status": "ok" if deleted else "not_found", "provider": provider}
+
+
+@api.get("/organizations/{org_id}/api-keys")
+def list_developer_api_keys(org_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can view API keys.")
+    return {"api_keys": db.list_developer_api_keys(org_id)}
+
+
+@api.post("/organizations/{org_id}/api-keys", status_code=201)
+def create_developer_api_key(org_id: str, body: CreateDeveloperApiKeyRequest, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can generate API keys.")
+    entitlements.check_can_use_api(org_id)
+    try:
+        key_meta, raw_secret = db.create_developer_api_key(
+            org_id=org_id,
+            user_id=user.id,
+            name=body.name,
+            workspace_id=body.workspace_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"key": key_meta, "secret": raw_secret}
+
+
+@api.delete("/organizations/{org_id}/api-keys/{key_id}")
+def revoke_developer_api_key(org_id: str, key_id: str, user: User = Depends(current_user)):
+    org = db.get_organization(org_id, user.id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if org.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only organization owners and admins can revoke API keys.")
+    revoked = db.revoke_developer_api_key(org_id, key_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="API key not found.")
+    return {"status": "ok", "id": key_id}
+
+
 @api.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
     raw_body = await request.body()
@@ -1054,6 +1188,10 @@ class PreparedAsk:
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
     limits.check(f"ask:{workspace.user.id}", limits.ASK_LIMITS)
     check_index_ready(workspace)
+    if workspace.organization_id:
+        byok_keys = db.get_all_raw_organization_ai_keys(workspace.organization_id)
+        if byok_keys:
+            llm.set_request_api_keys(byok_keys)
     provider = choose_provider(request)
     if provider and check_available:
         reason = llm.PROVIDERS[provider].unavailable_reason()
@@ -1200,10 +1338,14 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
     if prepared.chat:
         db.add_message(prepared.chat["id"], "user", request.question)
 
+    byok_keys = db.get_all_raw_organization_ai_keys(workspace.organization_id) if workspace.organization_id else {}
+
     def event(kind: str, **fields: Any) -> str:
         return json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
 
     def events():
+        if byok_keys:
+            llm.set_request_api_keys(byok_keys)
         yield event("sources", **summary)
         if not prepared.provider:
             used = account_usage(workspace, None, llm.Usage())
@@ -1336,6 +1478,159 @@ def insights(workspace: Workspace = Depends(current_workspace)):
         # Hosted-model tokens and estimated cost this calendar month (UTC).
         "usage": db.usage_summary(workspace.id, db.now()[:8] + "01"),
     }
+
+
+# --- developer v1 endpoints ---------------------------------------------------------
+
+@api.post("/v1/ask")
+def v1_ask(
+    body: V1AskRequest,
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+    x_workspace_id: str | None = Header(default=None),
+):
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+    if not isinstance(x_workspace_id, str):
+        x_workspace_id = None
+    target_ws_id = body.workspace_id or x_workspace_id
+    if user.api_key_record:
+        org_id = user.api_key_record["organization_id"]
+        key_ws = user.api_key_record.get("workspace_id")
+        if key_ws and target_ws_id and target_ws_id != key_ws:
+            raise HTTPException(status_code=403, detail="API key is restricted to a different workspace.")
+        target_ws_id = target_ws_id or key_ws
+    else:
+        org_id = x_organization_id
+
+    if target_ws_id:
+        ws_row = db.get_workspace(target_ws_id, user.id, organization_id=org_id)
+        if not ws_row:
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+    else:
+        if not org_id:
+            user_orgs = db.list_user_organizations(user.id)
+            org_id = user_orgs[0]["id"] if user_orgs else None
+        workspaces = user_workspaces(user, organization_id=org_id)
+        if not workspaces:
+            raise HTTPException(status_code=404, detail="No workspaces found.")
+        ws_row = workspaces[0]
+
+    ws = Workspace(
+        id=ws_row["id"],
+        name=ws_row["name"],
+        role=ws_row["role"],
+        user=user,
+        organization_id=ws_row.get("organization_id") or (org_id or ""),
+    )
+
+    if ws.organization_id:
+        byok_keys = db.get_all_raw_organization_ai_keys(ws.organization_id)
+        if byok_keys:
+            llm.set_request_api_keys(byok_keys)
+
+    ask_req = AskRequest(
+        question=body.question,
+        provider=body.provider,
+        top_k=body.top_k,
+        rerank=body.rerank,
+        tags=body.tags,
+        save=False,
+    )
+    res = ask(ask_req, workspace=ws)
+    return {
+        "question": res["question"],
+        "answer": res["answer"],
+        "sources": res.get("sources", []),
+        "provider": res.get("provider"),
+        "model": res.get("model"),
+        "reranked": res.get("reranked", False),
+        "covered": res.get("covered", False),
+        "removed_citations": res.get("removed_citations", []),
+    }
+
+
+@api.post("/v1/search")
+def v1_search(
+    body: V1SearchRequest,
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+    x_workspace_id: str | None = Header(default=None),
+):
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+    if not isinstance(x_workspace_id, str):
+        x_workspace_id = None
+    target_ws_id = body.workspace_id or x_workspace_id
+    if user.api_key_record:
+        org_id = user.api_key_record["organization_id"]
+        key_ws = user.api_key_record.get("workspace_id")
+        if key_ws and target_ws_id and target_ws_id != key_ws:
+            raise HTTPException(status_code=403, detail="API key is restricted to a different workspace.")
+        target_ws_id = target_ws_id or key_ws
+    else:
+        org_id = x_organization_id
+
+    if target_ws_id:
+        ws_row = db.get_workspace(target_ws_id, user.id, organization_id=org_id)
+        if not ws_row:
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+    else:
+        if not org_id:
+            user_orgs = db.list_user_organizations(user.id)
+            org_id = user_orgs[0]["id"] if user_orgs else None
+        workspaces = user_workspaces(user, organization_id=org_id)
+        if not workspaces:
+            raise HTTPException(status_code=404, detail="No workspaces found.")
+        ws_row = workspaces[0]
+
+    ws = Workspace(
+        id=ws_row["id"],
+        name=ws_row["name"],
+        role=ws_row["role"],
+        user=user,
+        organization_id=ws_row.get("organization_id") or (org_id or ""),
+    )
+    status = ws.store.status()
+    if status == "stale":
+        raise HTTPException(
+            status_code=409,
+            detail="The search model or chunk settings changed. Re-index the documents before searching.",
+        )
+    if status == "empty":
+        return {
+            "query": body.query,
+            "workspace_id": ws.id,
+            "count": 0,
+            "sources": [],
+        }
+    sources = ws.store.retrieve(body.query, top_k=body.top_k, rerank=body.rerank, tags=body.tags)
+    return {
+        "query": body.query,
+        "workspace_id": ws.id,
+        "count": len(sources),
+        "sources": sources,
+    }
+
+
+@api.get("/v1/workspaces")
+def v1_workspaces(
+    user: User = Depends(current_user),
+    x_organization_id: str | None = Header(default=None),
+):
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+    if user.api_key_record:
+        org_id = user.api_key_record["organization_id"]
+        key_ws_id = user.api_key_record.get("workspace_id")
+        workspaces = user_workspaces(user, organization_id=org_id)
+        if key_ws_id:
+            workspaces = [w for w in workspaces if w["id"] == key_ws_id]
+        return {"workspaces": workspaces}
+
+    org_id = x_organization_id
+    workspaces = user_workspaces(user, organization_id=org_id)
+    return {"workspaces": workspaces}
 
 
 app.include_router(api)

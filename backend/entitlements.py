@@ -25,6 +25,7 @@ PLANS: dict[str, dict[str, Any]] = {
             "canned",
         ],
         "ocr_enabled": True,
+        "api_access": False,
     },
     "pro": {
         "id": "pro",
@@ -48,6 +49,7 @@ PLANS: dict[str, dict[str, Any]] = {
             "canned",
         ],
         "ocr_enabled": True,
+        "api_access": True,
     },
     "business": {
         "id": "business",
@@ -61,6 +63,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "max_queries_per_month": 10000,
         "allowed_models": ["*"],
         "ocr_enabled": True,
+        "api_access": True,
     },
     "enterprise": {
         "id": "enterprise",
@@ -74,6 +77,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "max_queries_per_month": 100000,
         "allowed_models": ["*"],
         "ocr_enabled": True,
+        "api_access": True,
     },
 }
 
@@ -152,4 +156,14 @@ def check_can_ask(org_id: str, model_id: str | None = None, kind: str | None = N
             status_code=402,
             detail=f"Monthly AI question quota reached ({plan['max_queries_per_month']} questions) for the {plan['name']}. Upgrade plan to continue asking questions.",
             headers={"X-Upgrade-Required": "queries"},
+        )
+
+
+def check_can_use_api(org_id: str) -> None:
+    plan = get_organization_plan(org_id)
+    if not plan.get("api_access", False):
+        raise HTTPException(
+            status_code=402,
+            detail=f"Developer API key access is not available on the {plan['name']}. Upgrade to Pro or Business to generate API keys and integrate with your systems.",
+            headers={"X-Upgrade-Required": "api_access"},
         )

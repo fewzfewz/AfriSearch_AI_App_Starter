@@ -1,6 +1,7 @@
 """Who is making a request: a Supabase-signed-in user, or the local user when sign-in is off."""
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 import jwt
 from fastapi import Depends, Header, HTTPException
 
-from backend import config, db, mailer
+from backend import config, db, entitlements, mailer
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class User:
     id: str
     email: str
     name: str
+    api_key_record: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,8 +87,52 @@ def validate_auth_config() -> None:
             )
 
 
-def current_user(authorization: str | None = Header(default=None)) -> User:
-    """FastAPI dependency: the signed-in user (created in the database on first sight)."""
+def current_user(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> User:
+    """FastAPI dependency: the signed-in user or authenticated API key caller."""
+    if not isinstance(authorization, str):
+        authorization = None
+    if not isinstance(x_api_key, str):
+        x_api_key = None
+
+    api_token: str | None = None
+    if x_api_key and x_api_key.strip().startswith("afri_live_"):
+        api_token = x_api_key.strip()
+    elif authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token.startswith("afri_live_"):
+            api_token = token.strip()
+        elif authorization.strip().startswith("afri_live_"):
+            api_token = authorization.strip()
+
+    if api_token:
+        key_hash = hashlib.sha256(api_token.encode("utf-8")).hexdigest()
+        key_record = db.get_developer_api_key_by_hash(key_hash)
+        if not key_record:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid API key.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        entitlements.check_can_use_api(key_record["organization_id"])
+        db.touch_developer_api_key(key_record["id"])
+        user_row = db.get_user(key_record["user_id"])
+        if user_row:
+            return User(
+                id=user_row["id"],
+                email=user_row.get("email", ""),
+                name=user_row.get("name", key_record["name"]),
+                api_key_record=key_record,
+            )
+        return User(
+            id=key_record["user_id"],
+            email="",
+            name=key_record["name"],
+            api_key_record=key_record,
+        )
+
     if config.AUTH_MODE == "none":
         if (config.ENVIRONMENT or "").strip().lower() == "production":
             raise HTTPException(
@@ -123,6 +169,21 @@ def current_organization(
     x_organization_id: str | None = Header(default=None),
 ) -> Organization:
     """FastAPI dependency: the organization named in X-Organization-Id, or the user's primary one."""
+    if not isinstance(x_organization_id, str):
+        x_organization_id = None
+
+    if user.api_key_record:
+        key_org_id = user.api_key_record["organization_id"]
+        if x_organization_id and x_organization_id != key_org_id:
+            raise HTTPException(
+                status_code=403,
+                detail="API key cannot access other organizations.",
+            )
+        found = db.get_organization(key_org_id, user.id) or db.get_organization(key_org_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+        return Organization(id=found["id"], name=found["name"], role=found.get("role", "member"), user=user)
+
     if x_organization_id:
         found = db.get_organization(x_organization_id, user.id)
         if not found:

@@ -343,3 +343,23 @@ export interface OrganizationUsageResponse {
   };
   plan: Plan;
 }
+
+export interface DeveloperApiKey {
+  id: string;
+  organization_id: string;
+  workspace_id?: string | null;
+  user_id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+}
+
+export interface CreatedDeveloperApiKey {
+  key: DeveloperApiKey;
+  secret: string;
+}
+
+export interface OrganizationAIKeysResponse {
+  keys: Record<string, string>;
+}

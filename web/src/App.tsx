@@ -15,6 +15,10 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage").then((m) => ({ de
 const SignInPage = lazy(() => import("./pages/SignInPage").then((m) => ({ default: m.SignInPage })));
 const PrivacyPage = lazy(() => import("./pages/LegalPage").then((m) => ({ default: m.PrivacyPage })));
 const TermsPage = lazy(() => import("./pages/LegalPage").then((m) => ({ default: m.TermsPage })));
+const PricingPage = lazy(() => import("./pages/PricingPage").then((m) => ({ default: m.PricingPage })));
+const DevelopersPage = lazy(() => import("./pages/DevelopersPage").then((m) => ({ default: m.DevelopersPage })));
+const AboutPage = lazy(() => import("./pages/AboutPage").then((m) => ({ default: m.AboutPage })));
+const FeaturesPage = lazy(() => import("./pages/FeaturesPage").then((m) => ({ default: m.FeaturesPage })));
 
 function Loading() {
   return <div className="flex min-h-screen items-center justify-center"><Spinner className="h-6 w-6" /></div>;
@@ -58,6 +62,10 @@ function Routed() {
     <Suspense fallback={<Loading />}>
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      <Route path="/pricing" element={<PricingPage />} />
+      <Route path="/developers" element={<DevelopersPage />} />
+      <Route path="/about" element={<AboutPage />} />
+      <Route path="/features" element={<FeaturesPage />} />
       <Route path="/signin" element={<SignInPage />} />
       <Route path="/privacy" element={<PrivacyPage />} />
       <Route path="/terms" element={<TermsPage />} />

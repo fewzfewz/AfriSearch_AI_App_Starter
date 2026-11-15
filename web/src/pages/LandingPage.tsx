@@ -74,11 +74,11 @@ export function LandingPage() {
       <header className="sticky top-0 z-30 border-b border-ink-100/80 bg-white/80 backdrop-blur dark:border-ink-900 dark:bg-ink-950/80">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">
           <Link to="/"><Logo /></Link>
-          <nav className="hidden gap-6 text-sm text-ink-600 dark:text-ink-400 md:flex">
-            <a href="#features" className="hover:text-ink-900 dark:hover:text-white">Features</a>
-            <a href="#how" className="hover:text-ink-900 dark:hover:text-white">How it works</a>
-            <a href="#privacy" className="hover:text-ink-900 dark:hover:text-white">Privacy</a>
-            <a href="#faq" className="hover:text-ink-900 dark:hover:text-white">FAQ</a>
+          <nav className="hidden gap-6 text-sm font-medium text-ink-600 dark:text-ink-400 md:flex">
+            <Link to="/features" className="hover:text-ink-900 dark:hover:text-white">Features</Link>
+            <Link to="/pricing" className="hover:text-ink-900 dark:hover:text-white">Pricing</Link>
+            <Link to="/developers" className="hover:text-ink-900 dark:hover:text-white">Developers</Link>
+            <Link to="/about" className="hover:text-ink-900 dark:hover:text-white">About</Link>
           </nav>
           <div className="ml-auto flex items-center gap-2">
             {config?.auth === "supabase" && !signedIn && (
@@ -222,13 +222,18 @@ export function LandingPage() {
       </main>
 
       <footer className="border-t border-ink-100 dark:border-ink-900">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-8 text-sm text-ink-500 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-6 px-4 py-8 text-sm text-ink-500 sm:px-6">
           <Logo className="text-ink-900 dark:text-white" />
           <span>Version {config?.version ?? ""} · MIT license</span>
-          <Link to="/privacy" className="ml-auto hover:text-ink-900 dark:hover:text-white">Privacy</Link>
-          <Link to="/terms" className="hover:text-ink-900 dark:hover:text-white">Terms</Link>
-          <a href="https://github.com/fewzfewz/AfriSearch_AI_App_Starter" className="hover:text-ink-900 dark:hover:text-white">GitHub</a>
-          <a href="/api/docs" className="hover:text-ink-900 dark:hover:text-white">API</a>
+          <div className="ml-auto flex flex-wrap items-center gap-4">
+            <Link to="/features" className="hover:text-ink-900 dark:hover:text-white">Features</Link>
+            <Link to="/pricing" className="hover:text-ink-900 dark:hover:text-white">Pricing</Link>
+            <Link to="/developers" className="hover:text-ink-900 dark:hover:text-white">Developers</Link>
+            <Link to="/about" className="hover:text-ink-900 dark:hover:text-white">About</Link>
+            <Link to="/privacy" className="hover:text-ink-900 dark:hover:text-white">Privacy</Link>
+            <Link to="/terms" className="hover:text-ink-900 dark:hover:text-white">Terms</Link>
+            <a href="https://github.com/fewzfewz/AfriSearch_AI_App_Starter" target="_blank" rel="noopener noreferrer" className="hover:text-ink-900 dark:hover:text-white">GitHub</a>
+          </div>
         </div>
       </footer>
     </div>

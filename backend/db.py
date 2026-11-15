@@ -5,6 +5,7 @@ from request handlers and the indexing thread alike.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -16,6 +17,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
+
+from cryptography.fernet import Fernet
 
 from backend import config
 
@@ -196,6 +199,27 @@ CREATE TABLE IF NOT EXISTS webhook_events (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS webhook_events_lookup ON webhook_events (id, provider);
+CREATE TABLE IF NOT EXISTS developer_api_keys (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id TEXT REFERENCES workspaces (id) ON DELETE SET NULL,
+    user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    name TEXT NOT NULL CHECK (length(trim(name)) >= 1 AND length(name) <= 100),
+    key_prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS api_keys_hash ON developer_api_keys (key_hash);
+CREATE INDEX IF NOT EXISTS api_keys_org ON developer_api_keys (organization_id);
+CREATE TABLE IF NOT EXISTS organization_ai_keys (
+    organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider TEXT NOT NULL CHECK (provider IN ('openai', 'claude', 'gemini')),
+    encrypted_key TEXT NOT NULL,
+    key_hint TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (organization_id, provider)
+);
 """
 
 _initialized: set[str] = set()
@@ -366,7 +390,34 @@ def migrate(conn: sqlite3.Connection) -> None:
     WHERE w.organization_id IS NOT NULL
     """)
 
-    # 8. Check for unassigned workspaces
+    # 8. Schema DDL: developer_api_keys and organization_ai_keys
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS developer_api_keys (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces (id) ON DELETE SET NULL,
+        user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        name TEXT NOT NULL CHECK (length(trim(name)) >= 1 AND length(name) <= 100),
+        key_prefix TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS api_keys_hash ON developer_api_keys (key_hash);")
+    conn.execute("CREATE INDEX IF NOT EXISTS api_keys_org ON developer_api_keys (organization_id);")
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS organization_ai_keys (
+        organization_id TEXT NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+        provider TEXT NOT NULL CHECK (provider IN ('openai', 'claude', 'gemini')),
+        encrypted_key TEXT NOT NULL,
+        key_hint TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (organization_id, provider)
+    );
+    """)
+
+    # 9. Check for unassigned workspaces
     unassigned = conn.execute("SELECT id, name, created_at FROM workspaces WHERE organization_id IS NULL").fetchall() if workspace_columns else []
     if not unassigned:
         return  # Fully migrated
@@ -853,6 +904,172 @@ def recover_workspace(workspace_id: str, target_org_id: str) -> None:
             raise ValueError(f"Workspace {workspace_id} does not exist")
         conn.execute("UPDATE workspaces SET organization_id = ? WHERE id = ?", (target_org_id, workspace_id))
         logger.info("Recovered workspace %s into organization %s", workspace_id, target_org_id)
+
+
+# --- developer api keys & organization ai provider keys -----------------------------
+
+def _fernet() -> Fernet:
+    secret = (config.SUPABASE_JWT_SECRET or config.SUPABASE_SERVICE_ROLE_KEY or "afrisearch-secure-key-default-salt-32bytes").encode("utf-8")
+    key_32 = hashlib.sha256(secret).digest()
+    return Fernet(base64.urlsafe_b64encode(key_32))
+
+
+def _encrypt_secret(val: str) -> str:
+    return _fernet().encrypt(val.strip().encode("utf-8")).decode("utf-8")
+
+
+def _decrypt_secret(encrypted: str) -> str:
+    try:
+        return _fernet().decrypt(encrypted.encode("utf-8")).decode("utf-8")
+    except Exception as exc:
+        logger.error("Failed to decrypt stored API secret: %s", exc)
+        return ""
+
+
+# Developer API Keys (Programmatic Integrations)
+
+def create_developer_api_key(
+    org_id: str,
+    user_id: str,
+    name: str,
+    workspace_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise ValueError("API Key name must be between 1 and 100 characters")
+    key_id = new_id()
+    raw_secret = f"afri_live_{secrets.token_hex(20)}"
+    key_prefix = raw_secret[:14] + "..."
+    key_hash = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO developer_api_keys (id, organization_id, workspace_id, user_id, name, key_prefix, key_hash, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (key_id, org_id, workspace_id, user_id, name, key_prefix, key_hash, ts),
+        )
+    return {
+        "id": key_id,
+        "organization_id": org_id,
+        "workspace_id": workspace_id,
+        "name": name,
+        "key_prefix": key_prefix,
+        "created_at": ts,
+        "last_used_at": None,
+    }, raw_secret
+
+
+def list_developer_api_keys(org_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, organization_id, workspace_id, user_id, name, key_prefix, created_at, last_used_at
+            FROM developer_api_keys
+            WHERE organization_id = ?
+            ORDER BY created_at DESC
+            """,
+            (org_id,),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
+def revoke_developer_api_key(org_id: str, key_id: str) -> bool:
+    with connect() as conn:
+        res = conn.execute(
+            "DELETE FROM developer_api_keys WHERE id = ? AND organization_id = ?",
+            (key_id, org_id),
+        )
+        return res.rowcount > 0
+
+
+def get_developer_api_key_by_hash(key_hash: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM developer_api_keys WHERE key_hash = ?",
+            (key_hash,),
+        ).fetchone()
+        return _row(row)
+
+
+def touch_developer_api_key(key_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE developer_api_keys SET last_used_at = ? WHERE id = ?", (now(), key_id))
+
+
+# Organization AI Provider Keys (BYOK - Bring Your Own Key)
+
+def set_organization_ai_key(org_id: str, provider: str, raw_key: str) -> dict[str, str]:
+    prov = provider.strip().lower()
+    if prov not in ("openai", "claude", "gemini"):
+        raise ValueError(f"Unsupported AI provider: {provider}. Must be openai, claude, or gemini.")
+    raw_key = raw_key.strip()
+    if not raw_key or len(raw_key) < 10:
+        raise ValueError("Invalid API key provided.")
+    encrypted = _encrypt_secret(raw_key)
+    hint = raw_key[:7] + "..." + raw_key[-4:] if len(raw_key) >= 15 else raw_key[:4] + "..."
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO organization_ai_keys (organization_id, provider, encrypted_key, key_hint, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (organization_id, provider) DO UPDATE SET
+                encrypted_key = excluded.encrypted_key,
+                key_hint = excluded.key_hint,
+                updated_at = excluded.updated_at
+            """,
+            (org_id, prov, encrypted, hint, ts),
+        )
+    return {"provider": prov, "key_hint": hint, "updated_at": ts}
+
+
+def get_organization_ai_keys(org_id: str) -> dict[str, str]:
+    """Returns configured providers and their masked key hints (never raw secrets)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT provider, key_hint FROM organization_ai_keys WHERE organization_id = ?",
+            (org_id,),
+        ).fetchall()
+        return {r["provider"]: r["key_hint"] for r in rows}
+
+
+def get_raw_organization_ai_key(org_id: str, provider: str) -> str | None:
+    prov = provider.strip().lower()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT encrypted_key FROM organization_ai_keys WHERE organization_id = ? AND provider = ?",
+            (org_id, prov),
+        ).fetchone()
+        if not row:
+            return None
+        decrypted = _decrypt_secret(row["encrypted_key"])
+        return decrypted if decrypted else None
+
+
+def get_all_raw_organization_ai_keys(org_id: str) -> dict[str, str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT provider, encrypted_key FROM organization_ai_keys WHERE organization_id = ?",
+            (org_id,),
+        ).fetchall()
+        result = {}
+        for r in rows:
+            decrypted = _decrypt_secret(r["encrypted_key"])
+            if decrypted:
+                result[r["provider"]] = decrypted
+        return result
+
+
+def delete_organization_ai_key(org_id: str, provider: str) -> bool:
+    prov = provider.strip().lower()
+    with connect() as conn:
+        res = conn.execute(
+            "DELETE FROM organization_ai_keys WHERE organization_id = ? AND provider = ?",
+            (org_id, prov),
+        )
+        return res.rowcount > 0
 
 
 # --- subscriptions and usage --------------------------------------------------------

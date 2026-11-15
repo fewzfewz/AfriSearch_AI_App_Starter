@@ -41,6 +41,16 @@ class Usage:
 
 # The Usage of the answer being generated; provider functions add to it.
 _usage: contextvars.ContextVar[Usage | None] = contextvars.ContextVar("usage", default=None)
+_request_keys: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar("request_keys", default=None)
+
+
+def set_request_api_keys(keys: dict[str, str] | None) -> None:
+    _request_keys.set(keys)
+
+
+def get_request_api_key(provider: str) -> str | None:
+    keys = _request_keys.get()
+    return keys.get(provider) if keys else None
 
 
 def _record(input_tokens: int | None, output_tokens: int | None) -> None:
@@ -138,9 +148,12 @@ CLAUDE_FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1"
 
 
 def _claude_check() -> str | None:
-    return _missing_package("anthropic", "anthropic") or _missing_env(
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"
-    )
+    pkg = _missing_package("anthropic", "anthropic")
+    if pkg:
+        return pkg
+    if get_request_api_key("claude"):
+        return None
+    return _missing_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
 def _claude_request(system: str, prompt: str) -> dict[str, Any]:
@@ -162,7 +175,8 @@ def _claude_request(system: str, prompt: str) -> dict[str, Any]:
 def _claude_generate(system: str, prompt: str) -> str:
     import anthropic
 
-    client = _client("claude", anthropic.Anthropic)
+    custom_key = get_request_api_key("claude")
+    client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
     response = client.beta.messages.create(**_claude_request(system, prompt))
     _record(response.usage.input_tokens, response.usage.output_tokens)
 
@@ -177,7 +191,8 @@ def _claude_generate(system: str, prompt: str) -> str:
 def _claude_stream(system: str, prompt: str) -> Iterator[str]:
     import anthropic
 
-    client = _client("claude", anthropic.Anthropic)
+    custom_key = get_request_api_key("claude")
+    client = anthropic.Anthropic(api_key=custom_key) if custom_key else _client("claude", anthropic.Anthropic)
     produced = False
     # With fallbacks, a declined attempt continues on the fallback model in the same stream.
     with client.beta.messages.stream(**_claude_request(system, prompt)) as stream:
@@ -199,13 +214,19 @@ OPENAI_MODEL = os.getenv("AFRISEARCH_OPENAI_MODEL", "gpt-6.1-sol")
 
 
 def _openai_check() -> str | None:
-    return _missing_package("openai", "openai") or _missing_env("OPENAI_API_KEY")
+    pkg = _missing_package("openai", "openai")
+    if pkg:
+        return pkg
+    if get_request_api_key("openai"):
+        return None
+    return _missing_env("OPENAI_API_KEY")
 
 
 def _openai_generate(system: str, prompt: str) -> str:
     import openai
 
-    client = _client("openai", openai.OpenAI)
+    custom_key = get_request_api_key("openai")
+    client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
     response = client.responses.create(
         model=OPENAI_MODEL,
         instructions=system,
@@ -223,7 +244,8 @@ def _openai_generate(system: str, prompt: str) -> str:
 def _openai_stream(system: str, prompt: str) -> Iterator[str]:
     import openai
 
-    client = _client("openai", openai.OpenAI)
+    custom_key = get_request_api_key("openai")
+    client = openai.OpenAI(api_key=custom_key) if custom_key else _client("openai", openai.OpenAI)
     events = client.responses.create(
         model=OPENAI_MODEL, instructions=system, input=prompt, max_output_tokens=API_MAX_TOKENS, stream=True,
     )
@@ -246,9 +268,12 @@ GEMINI_MODEL = os.getenv("AFRISEARCH_GEMINI_MODEL", "gemini-4-argon")
 
 
 def _gemini_check() -> str | None:
-    return _missing_package("google.genai", "google-genai") or _missing_env(
-        "GEMINI_API_KEY", "GOOGLE_API_KEY"
-    )
+    pkg = _missing_package("google.genai", "google-genai")
+    if pkg:
+        return pkg
+    if get_request_api_key("gemini"):
+        return None
+    return _missing_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 
 def _gemini_config(system: str) -> Any:
@@ -266,7 +291,8 @@ def _gemini_record(response: Any) -> None:
 def _gemini_generate(system: str, prompt: str) -> str:
     from google import genai
 
-    client = _client("gemini", genai.Client)
+    custom_key = get_request_api_key("gemini")
+    client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system))
     _gemini_record(response)
     text = (response.text or "").strip()
@@ -278,7 +304,8 @@ def _gemini_generate(system: str, prompt: str) -> str:
 def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
     from google import genai
 
-    client = _client("gemini", genai.Client)
+    custom_key = get_request_api_key("gemini")
+    client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
     produced = False
     last = None
     for chunk in client.models.generate_content_stream(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system)):

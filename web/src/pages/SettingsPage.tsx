@@ -1,16 +1,16 @@
 // Workspace, team, appearance and account settings.
 import {
-  AlertTriangle, Building2, CreditCard, Download, FolderOpen, Info, LogOut, Monitor, Moon, Palette, Settings, Sun, Trash2, UserPlus, UserRound, Users,
+  AlertTriangle, Building2, Check, Copy, Cpu, CreditCard, Download, FolderOpen, Info, Key, LogOut, Monitor, Moon, Palette, Settings, Sparkles, Sun, Trash2, UserPlus, UserRound, Users,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Badge, Button, Card, ConfirmDialog, PageHeader, cx, useToast } from "../components/ui";
-import { api, downloadFile } from "../lib/api";
+import { Badge, Button, Card, ConfirmDialog, Modal, PageHeader, cx, useToast } from "../components/ui";
+import { api, createOrganizationAPIKey, deleteOrganizationAIKey, deleteOrganizationAPIKey, downloadFile, setOrganizationAIKey } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatSize, initials, shortModelName } from "../lib/format";
 import { useApi } from "../lib/hooks";
 import { useTheme } from "../lib/theme";
-import type { CheckoutResponse, DocumentsResponse, InvoicesResponse, Member, OrganizationUsageResponse } from "../lib/types";
+import type { CheckoutResponse, DeveloperApiKey, DocumentsResponse, InvoicesResponse, Member, OrganizationUsageResponse } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
 
 interface Team {
@@ -20,6 +20,8 @@ interface Team {
 
 const SECTIONS = [
   { id: "organization", title: "Organization", icon: Building2 },
+  { id: "ai_keys", title: "AI Model Keys (BYOK)", icon: Cpu },
+  { id: "api_keys", title: "Developer API Keys", icon: Key },
   { id: "workspace", title: "Workspace", icon: FolderOpen },
   { id: "members", title: "Members", icon: Users },
   { id: "appearance", title: "Appearance", icon: Palette },
@@ -99,6 +101,89 @@ export function SettingsPage() {
   const system = useApi<DocumentsResponse>("/documents");
   const orgUsage = useApi<OrganizationUsageResponse>(currentOrganization ? `/organizations/${currentOrganization.id}/usage` : null);
   const invoices = useApi<InvoicesResponse>(currentOrganization ? `/organizations/${currentOrganization.id}/invoices` : null);
+  const aiKeysApi = useApi<{ keys: Record<string, string> }>(
+    currentOrganization ? `/organizations/${currentOrganization.id}/ai-keys` : null
+  );
+  const [editingProvider, setEditingProvider] = useState<"openai" | "claude" | "gemini" | null>(null);
+  const [newAiKey, setNewAiKey] = useState("");
+  const [savingAiKey, setSavingAiKey] = useState(false);
+
+  const devKeysApi = useApi<{ api_keys: DeveloperApiKey[] }>(
+    currentOrganization ? `/organizations/${currentOrganization.id}/api-keys` : null
+  );
+  const [createKeyModal, setCreateKeyModal] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyWorkspace, setNewKeyWorkspace] = useState<string>("");
+  const [creatingKey, setCreatingKey] = useState(false);
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [secretCopied, setSecretCopied] = useState(false);
+  const [revokingKey, setRevokingKey] = useState<DeveloperApiKey | null>(null);
+  const [revoking, setRevoking] = useState(false);
+
+  const handleSaveAiKey = async () => {
+    if (!currentOrganization || !editingProvider || !newAiKey.trim()) return;
+    setSavingAiKey(true);
+    try {
+      await setOrganizationAIKey(currentOrganization.id, editingProvider, newAiKey.trim());
+      await aiKeysApi.reload();
+      setEditingProvider(null);
+      setNewAiKey("");
+      toast("AI provider key saved successfully (encrypted at rest)", "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to save AI key", "error");
+    } finally {
+      setSavingAiKey(false);
+    }
+  };
+
+  const handleDeleteAiKey = async (provider: "openai" | "claude" | "gemini") => {
+    if (!currentOrganization) return;
+    try {
+      await deleteOrganizationAIKey(currentOrganization.id, provider);
+      await aiKeysApi.reload();
+      toast("AI provider key removed. Now using platform default", "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to remove key", "error");
+    }
+  };
+
+  const handleCreateDevKey = async () => {
+    if (!currentOrganization || !newKeyName.trim()) return;
+    setCreatingKey(true);
+    try {
+      const res = await createOrganizationAPIKey(
+        currentOrganization.id,
+        newKeyName.trim(),
+        newKeyWorkspace || null
+      );
+      await devKeysApi.reload();
+      setNewKeyName("");
+      setNewKeyWorkspace("");
+      setCreateKeyModal(false);
+      setCreatedSecret(res.secret);
+      toast("Developer API key generated", "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to create API key", "error");
+    } finally {
+      setCreatingKey(false);
+    }
+  };
+
+  const handleRevokeDevKey = async () => {
+    if (!currentOrganization || !revokingKey) return;
+    setRevoking(true);
+    try {
+      await deleteOrganizationAPIKey(currentOrganization.id, revokingKey.id);
+      await devKeysApi.reload();
+      setRevokingKey(null);
+      toast("API key revoked", "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to revoke key", "error");
+    } finally {
+      setRevoking(false);
+    }
+  };
+
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<"pro" | "business">("pro");
   const [selectedProvider, setSelectedProvider] = useState<"stripe" | "chapa">("stripe");
@@ -539,6 +624,236 @@ export function SettingsPage() {
           </Section>
         )}
 
+        {currentOrganization && (
+          <Section
+            id="ai_keys"
+            description="Bring your own AI provider keys (BYOK). Keys are encrypted at rest with Fernet and decrypted only in memory during requests. If not set, requests automatically use AfriSearch's hosted models."
+          >
+            <div className="space-y-4">
+              <div className="rounded-xl border border-brand-200/80 bg-brand-50/40 p-4 text-xs text-brand-900 dark:border-brand-900/50 dark:bg-brand-950/30 dark:text-brand-200">
+                <div className="flex items-start gap-2">
+                  <Sparkles className="h-4 w-4 shrink-0 text-brand-600 mt-0.5" />
+                  <div>
+                    <strong className="font-semibold">Hosted Models vs Custom Keys:</strong> Paid plans include hosted model inference out of the box with zero setup required. Adding your own key is optional and recommended if your company has enterprise credits with OpenAI, Anthropic, or Google.
+                  </div>
+                </div>
+              </div>
+
+              <div className="divide-y divide-ink-100 rounded-xl border border-ink-200/80 dark:divide-ink-800 dark:border-ink-800 overflow-hidden">
+                {[
+                  { id: "openai", name: "OpenAI", desc: "GPT-4o, GPT-4o-mini", prefix: "sk-proj- / sk-" },
+                  { id: "claude", name: "Anthropic Claude", desc: "Claude 3.5 Sonnet, Claude 3 Opus", prefix: "sk-ant-" },
+                  { id: "gemini", name: "Google Gemini", desc: "Gemini 1.5 Pro, Gemini 1.5 Flash", prefix: "AIzaSy..." },
+                ].map((item) => {
+                  const existingKeyHint = aiKeysApi.data?.keys?.[item.id];
+                  const isEditing = editingProvider === item.id;
+
+                  return (
+                    <div key={item.id} className="p-4 sm:p-5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-300 font-bold">
+                            <Cpu className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-semibold text-sm text-ink-900 dark:text-white">{item.name}</h4>
+                              <Badge tone={existingKeyHint ? "green" : "gray"}>
+                                {existingKeyHint ? "Custom Key Active" : "Default (Hosted Model)"}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-ink-500 mt-0.5">{item.desc}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {existingKeyHint ? (
+                            <>
+                              <code className="text-xs font-mono bg-ink-100 dark:bg-ink-800 px-2 py-1 rounded text-ink-600 dark:text-ink-300">
+                                {existingKeyHint}
+                              </code>
+                              {isOrgOwner && (
+                                <>
+                                  <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); }}>
+                                    Update
+                                  </Button>
+                                  <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50" onClick={() => handleDeleteAiKey(item.id as any)}>
+                                    Remove
+                                  </Button>
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            isOrgOwner && (
+                              <Button size="sm" variant="secondary" onClick={() => { setEditingProvider(item.id as any); setNewAiKey(""); }}>
+                                Add Key
+                              </Button>
+                            )
+                          )}
+                        </div>
+                      </div>
+
+                      {isEditing && (
+                        <div className="mt-4 rounded-xl border border-ink-200 bg-ink-50/60 p-3.5 dark:border-ink-800 dark:bg-ink-950/60">
+                          <label className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1.5">
+                            Enter your {item.name} API Key ({item.prefix})
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="password"
+                              value={newAiKey}
+                              placeholder={`${item.prefix}...`}
+                              onChange={(e) => setNewAiKey(e.target.value)}
+                              className={inputClass}
+                            />
+                            <Button variant="primary" loading={savingAiKey} disabled={!newAiKey.trim()} onClick={handleSaveAiKey}>
+                              Save Encrypted
+                            </Button>
+                            <Button variant="ghost" onClick={() => setEditingProvider(null)}>
+                              Cancel
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-[11px] text-ink-500">
+                            Your API key is never logged or exposed. It is encrypted in SQLite using Fernet symmetric encryption with a private machine key.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {currentOrganization && (
+          <Section
+            id="api_keys"
+            description="Manage live programmatic API keys to integrate AfriSearch with customer support widgets, mobile apps, or backend pipelines."
+          >
+            <div className="space-y-6">
+              {orgUsage.data?.plan.id === "free" ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-6 dark:border-amber-900/60 dark:bg-amber-950/30">
+                  <div className="flex items-start gap-3">
+                    <Key className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5" />
+                    <div>
+                      <h4 className="font-semibold text-ink-950 dark:text-white text-base">
+                        Developer API is a Professional Feature
+                      </h4>
+                      <p className="mt-1 text-sm text-ink-600 dark:text-ink-300 leading-relaxed">
+                        Generate live keys (<code className="text-xs bg-amber-100 dark:bg-amber-900/60 px-1 rounded">afri_live_*</code>) to query semantic document search and citation-backed question answering from your custom client apps or embeddable support widgets.
+                      </p>
+                      <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <Button size="sm" variant="primary" onClick={() => setUpgradeOpen(true)}>
+                          Upgrade to Pro to Enable API
+                        </Button>
+                        <Link to="/developers" className="text-xs font-semibold text-brand-700 dark:text-brand-400 hover:underline">
+                          Read Developer Documentation →
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {createdSecret && (
+                    <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950/50">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 font-bold text-sm text-emerald-900 dark:text-emerald-200">
+                            <Check className="h-4 w-4" /> New Developer API Key Generated
+                          </div>
+                          <p className="mt-1 text-xs text-emerald-800 dark:text-emerald-300">
+                            Copy this secret now. For security, it will never be displayed again.
+                          </p>
+                          <div className="mt-3 flex items-center gap-2">
+                            <code className="rounded bg-white dark:bg-ink-900 px-3 py-1.5 font-mono text-xs font-bold text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 select-all">
+                              {createdSecret}
+                            </code>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                navigator.clipboard.writeText(createdSecret);
+                                setSecretCopied(true);
+                                setTimeout(() => setSecretCopied(false), 2000);
+                              }}
+                            >
+                              {secretCopied ? <Check className="h-3.5 w-3.5 text-emerald-600 mr-1" /> : <Copy className="h-3.5 w-3.5 mr-1" />}
+                              {secretCopied ? "Copied" : "Copy Secret"}
+                            </Button>
+                          </div>
+                        </div>
+                        <Button size="sm" variant="ghost" onClick={() => setCreatedSecret(null)}>
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-semibold text-sm text-ink-900 dark:text-white">Active API Keys</h4>
+                      <p className="text-xs text-ink-500">Live tokens authorized to query your organization's workspaces.</p>
+                    </div>
+                    {isOrgOwner && (
+                      <Button size="sm" variant="primary" onClick={() => setCreateKeyModal(true)}>
+                        <Key className="mr-1.5 h-3.5 w-3.5" /> Generate Key
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="divide-y divide-ink-100 overflow-hidden rounded-xl border border-ink-200/80 dark:divide-ink-800 dark:border-ink-800">
+                    {(devKeysApi.data?.api_keys ?? []).length === 0 ? (
+                      <div className="p-8 text-center text-sm text-ink-500">
+                        No developer API keys created yet. Generate one to integrate with customer support widgets or your backend.
+                      </div>
+                    ) : (
+                      (devKeysApi.data?.api_keys ?? []).map((k) => (
+                        <div key={k.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 text-xs">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-ink-900 dark:text-white text-sm">{k.name}</span>
+                              <code className="font-mono bg-ink-100 dark:bg-ink-800 px-1.5 py-0.5 rounded text-ink-600 dark:text-ink-400">
+                                {k.key_prefix}
+                              </code>
+                            </div>
+                            <div className="mt-1 flex items-center gap-3 text-ink-500 text-[11px]">
+                              <span>Created {new Date(k.created_at).toLocaleDateString()}</span>
+                              <span>•</span>
+                              <span>Scope: {k.workspace_id ? (workspaces.find((w) => w.id === k.workspace_id)?.name || "Specific workspace") : "All workspaces"}</span>
+                              <span>•</span>
+                              <span>Last used: {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "Never"}</span>
+                            </div>
+                          </div>
+
+                          {isOrgOwner && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50"
+                              onClick={() => setRevokingKey(k)}
+                            >
+                              Revoke
+                            </Button>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-between text-xs text-ink-500">
+                    <span>Need integration help?</span>
+                    <Link to="/developers" className="font-medium text-brand-700 dark:text-brand-400 hover:underline">
+                      View API documentation & Support Chatbot Tutorial →
+                    </Link>
+                  </div>
+                </>
+              )}
+            </div>
+          </Section>
+        )}
+
         <Section id="workspace" description="A workspace holds documents and chats. Create one per team, project or client.">
           <label htmlFor="ws-name" className="text-sm font-medium">Name</label>
           <div className="mt-1.5 flex gap-2">
@@ -703,6 +1018,76 @@ export function SettingsPage() {
         )}
         </div>
       </div>
+
+      {/* Create Developer Key Modal */}
+      <Modal
+        open={createKeyModal}
+        onClose={() => setCreateKeyModal(false)}
+        title="Generate Developer API Key"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCreateKeyModal(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={creatingKey} disabled={!newKeyName.trim()} onClick={handleCreateDevKey}>
+              Create Key
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4 text-sm">
+          <div>
+            <label htmlFor="key-name" className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1">
+              Key Name / Purpose
+            </label>
+            <input
+              id="key-name"
+              placeholder="e.g. Website Support Chatbot, Mobile App Backend"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="key-ws" className="block text-xs font-medium text-ink-700 dark:text-ink-300 mb-1">
+              Workspace Scope
+            </label>
+            <select
+              id="key-ws"
+              value={newKeyWorkspace}
+              onChange={(e) => setNewKeyWorkspace(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">All current and future workspaces in organization</option>
+              {workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name} only
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-ink-500">
+              Restricting the key to a specific workspace ensures it cannot query documents from other team workspaces.
+            </p>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Revoke Key Confirmation Dialog */}
+      <ConfirmDialog
+        open={!!revokingKey}
+        title="Revoke Developer API Key"
+        confirmLabel={revoking ? "Revoking..." : "Revoke Key"}
+        confirmDisabled={revoking}
+        onConfirm={handleRevokeDevKey}
+        onClose={() => setRevokingKey(null)}
+        danger
+      >
+        <p className="text-sm text-ink-600 dark:text-ink-300">
+          Are you sure you want to revoke <strong>{revokingKey?.name}</strong> (<code>{revokingKey?.key_prefix}</code>)?
+          Any integrations, customer support widgets, or scripts using this key will immediately be blocked with HTTP 401.
+        </p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deletingAccount}

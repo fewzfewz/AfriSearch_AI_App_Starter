@@ -1,6 +1,6 @@
 // Talking to the AfriSearch API: sign-in token, current workspace, streaming and uploads.
 import { readLines } from "./ndjson";
-import type { StreamEvent, UploadResult } from "./types";
+import type { CreatedDeveloperApiKey, DeveloperApiKey, StreamEvent, UploadResult } from "./types";
 
 let getToken: () => Promise<string | null> = async () => null;
 let organizationId: string | null = null;
@@ -134,4 +134,54 @@ export async function openDocument(sourceId: string, page?: number | null) {
     tab?.close();
     throw error;
   }
+}
+
+/** Get configured AI provider keys (hints) for an organization */
+export async function getOrganizationAIKeys(orgId: string): Promise<Record<string, string>> {
+  const res = await api<{ keys: Record<string, string> }>(`/organizations/${encodeURIComponent(orgId)}/ai-keys`);
+  return res.keys;
+}
+
+/** Set custom AI provider key (BYOK) for an organization */
+export async function setOrganizationAIKey(
+  orgId: string,
+  provider: "openai" | "claude" | "gemini",
+  apiKey: string
+): Promise<{ status: string; provider: string; key_hint: string }> {
+  return api(`/organizations/${encodeURIComponent(orgId)}/ai-keys`, {
+    method: "POST",
+    json: { provider, api_key: apiKey },
+  });
+}
+
+/** Delete custom AI provider key for an organization */
+export async function deleteOrganizationAIKey(orgId: string, provider: string): Promise<{ status: string; provider: string }> {
+  return api(`/organizations/${encodeURIComponent(orgId)}/ai-keys/${encodeURIComponent(provider)}`, {
+    method: "DELETE",
+  });
+}
+
+/** List developer API keys for an organization */
+export async function getOrganizationAPIKeys(orgId: string): Promise<DeveloperApiKey[]> {
+  const res = await api<{ api_keys: DeveloperApiKey[] }>(`/organizations/${encodeURIComponent(orgId)}/api-keys`);
+  return res.api_keys;
+}
+
+/** Generate a new developer API key */
+export async function createOrganizationAPIKey(
+  orgId: string,
+  name: string,
+  workspaceId?: string | null
+): Promise<CreatedDeveloperApiKey> {
+  return api(`/organizations/${encodeURIComponent(orgId)}/api-keys`, {
+    method: "POST",
+    json: { name, workspace_id: workspaceId || null },
+  });
+}
+
+/** Revoke a developer API key */
+export async function deleteOrganizationAPIKey(orgId: string, keyId: string): Promise<{ status: string; id: string }> {
+  return api(`/organizations/${encodeURIComponent(orgId)}/api-keys/${encodeURIComponent(keyId)}`, {
+    method: "DELETE",
+  });
 }
