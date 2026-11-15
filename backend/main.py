@@ -1361,13 +1361,11 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
                 query, request.top_k, rerank=request.rerank, source_ids=request.source_ids, tags=request.tags
             )
 
-        sources = search(request.question)
-        # A follow-up like "and the price?" may find nothing on its own; then search
-        # again together with the previous question. Questions that work on their own
-        # (including a new topic in the same chat) are searched as they are.
-        with_context = answers.search_query(request.question, history)
-        if not answers.is_covered(sources) and with_context != request.question:
-            alternative = search(with_context)
+        from backend.conversational import rewrite_conversational_query
+        effective_query = rewrite_conversational_query(request.question, history)
+        sources = search(effective_query)
+        if not answers.is_covered(sources) and effective_query != request.question:
+            alternative = search(request.question)
             if answers.is_covered(alternative):
                 sources = alternative
         covered = answers.is_covered(sources)

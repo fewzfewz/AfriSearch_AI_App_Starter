@@ -97,6 +97,7 @@ export interface Source {
   rerank_score: number | null;
   ocr: boolean;
   text: string;
+  expanded_text?: string;
   facet?: string;
 }
 

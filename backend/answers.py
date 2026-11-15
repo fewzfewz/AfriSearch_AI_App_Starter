@@ -120,7 +120,8 @@ def build_prompt(
             for i, item in enumerate(sources, start=1):
                 if item.get("facet") == f:
                     location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
-                    source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{item['text']}")
+                    text_content = item.get("expanded_text") or item["text"]
+                    source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{text_content}")
         evidence = "\n\n".join(source_blocks)
         multi_facet_note = (
             "\nNote: The question addresses multiple facets/chapters. Be sure to synthesize, compare, "
@@ -130,7 +131,8 @@ def build_prompt(
         source_blocks = []
         for i, item in enumerate(sources, start=1):
             location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
-            source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{item['text']}")
+            text_content = item.get("expanded_text") or item["text"]
+            source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{text_content}")
         evidence = "\n\n".join(source_blocks)
         multi_facet_note = ""
 
@@ -208,6 +210,7 @@ def source_payload(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "rerank_score": round(item["rerank_score"], 4) if "rerank_score" in item else None,
             "ocr": item.get("ocr", False),
             "text": item["text"],
+            "expanded_text": item.get("expanded_text"),
             "facet": item.get("facet"),
         }
         for i, item in enumerate(sources, start=1)

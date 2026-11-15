@@ -136,7 +136,7 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: 
         )}
         {message.content && !(notCovered && !message.streaming) && (
           <div>
-            <AnswerText text={message.content} onCite={cite} activeLabel={active} />
+            <AnswerText text={message.content} onCite={cite} activeLabel={active} sources={sources} />
             {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-blink rounded-full bg-brand-600" aria-hidden="true" />}
           </div>
         )}

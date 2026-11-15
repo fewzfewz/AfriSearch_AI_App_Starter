@@ -38,11 +38,82 @@ export function FileTile({ name, size = "md" }: { name: string; size?: "sm" | "m
   );
 }
 
-export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel }: {
+function CitationBadge({
+  label,
+  source,
+  active,
+  onCite,
+}: {
+  label: string;
+  source?: Source;
+  active: boolean;
+  onCite: (label: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const toast = useToast();
+  const pages = source ? formatPages(source.page, source.page_end) : null;
+
+  return (
+    <span
+      className="relative inline-block"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        type="button"
+        onClick={() => onCite(label)}
+        title={source ? `${source.source_name}${pages ? ` (${pages})` : ""}` : `Show source ${label}`}
+        className={cx(
+          "mx-0.5 inline-flex h-5 -translate-y-px items-center rounded-md px-1.5 align-middle text-[11px] font-semibold transition",
+          active
+            ? "bg-brand-gradient text-white shadow-sm"
+            : "bg-brand-100 text-brand-800 hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-200 dark:hover:bg-brand-900",
+        )}
+      >
+        {label}
+      </button>
+      {hovered && source && (
+        <span
+          className="absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 w-80 rounded-xl border border-ink-200/90 bg-white/95 p-3 text-left shadow-lift backdrop-blur dark:border-ink-700 dark:bg-ink-900/95 animate-scale-in pointer-events-auto"
+          role="tooltip"
+        >
+          <div className="flex items-center justify-between gap-1 border-b border-ink-100 pb-1.5 dark:border-ink-800 text-xs">
+            <span className="font-semibold text-ink-800 dark:text-ink-200 truncate flex items-center gap-1.5">
+              <span className="rounded bg-brand-gradient px-1 text-[10px] text-white font-bold">{label}</span>
+              <span className="truncate">{source.source_name}</span>
+            </span>
+            {pages && <span className="text-ink-400 shrink-0 text-[11px]">· {pages}</span>}
+          </div>
+          <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-ink-600 dark:text-ink-300 whitespace-pre-line">
+            {source.text}
+          </p>
+          <div className="mt-2.5 flex items-center justify-between pt-1 text-[11px]">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openDocument(source.source_id, source.page).catch((err: Error) => toast(err.message, "error"));
+              }}
+              className="text-brand-600 hover:text-brand-700 dark:text-brand-400 font-medium flex items-center gap-1 hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" /> Open in reader
+            </button>
+            <span className="text-ink-400 text-[10px]">{Math.round(source.score * 100)}% match</span>
+          </div>
+        </span>
+      )}
+    </span>
+  );
+}
+
+export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel, sources = [] }: {
   text: string;
   onCite: (label: string) => void;
   activeLabel?: string | null;
+  sources?: Source[];
 }) {
+  const sourcesByLabel = new Map(sources.map((s) => [s.label, s]));
+
   return (
     <div className="prose-answer text-[15px] leading-7 text-ink-800 dark:text-ink-100">
       <ReactMarkdown
@@ -51,20 +122,14 @@ export const AnswerText = memo(function AnswerText({ text, onCite, activeLabel }
           a: ({ href, children }) => {
             if (href?.startsWith("#cite-")) {
               const label = href.slice(6);
+              const source = sourcesByLabel.get(label);
               return (
-                <button
-                  type="button"
-                  onClick={() => onCite(label)}
-                  title={`Show source ${label}`}
-                  className={cx(
-                    "mx-0.5 inline-flex h-5 -translate-y-px items-center rounded-md px-1.5 align-middle text-[11px] font-semibold transition",
-                    activeLabel === label
-                      ? "bg-brand-gradient text-white shadow-sm"
-                      : "bg-brand-100 text-brand-800 hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-200 dark:hover:bg-brand-900",
-                  )}
-                >
-                  {label}
-                </button>
+                <CitationBadge
+                  label={label}
+                  source={source}
+                  active={activeLabel === label}
+                  onCite={onCite}
+                />
               );
             }
             return (
@@ -146,7 +211,9 @@ export function SourceCard({ source, highlight }: { source: Source; highlight?: 
           </Badge>
         )}
       </div>
-      <p className={cx("mt-3 whitespace-pre-line text-sm leading-6 text-ink-700 dark:text-ink-300", !expanded && long && "line-clamp-5")}>{source.text}</p>
+      <p className={cx("mt-3 whitespace-pre-line text-sm leading-6 text-ink-700 dark:text-ink-300", !expanded && long && "line-clamp-5")}>
+        {expanded && source.expanded_text ? source.expanded_text : source.text}
+      </p>
       <div className="mt-3 flex flex-wrap gap-2">
         {long && (
           <Button size="sm" variant="ghost" onClick={() => setExpanded((e) => !e)}>

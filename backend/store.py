@@ -556,6 +556,39 @@ class DocumentStore:
             results.sort(key=lambda item: item["rerank_score"], reverse=True)
         return results[:top_k]
 
+    def _expand_chunk_context(self, chunk: dict[str, Any], chunks_map: dict[str, dict[str, Any]]) -> str:
+        """Sentence-window context expansion: smoothly incorporates immediate lead-in/out context."""
+        c_id = chunk.get("chunk_id", "")
+        if "-" not in c_id:
+            return chunk.get("text", "")
+        src_id, idx_str = c_id.rsplit("-", 1)
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            return chunk.get("text", "")
+
+        prev_c = chunks_map.get(f"{src_id}-{idx-1}")
+        next_c = chunks_map.get(f"{src_id}-{idx+1}")
+
+        parts = []
+        if prev_c and prev_c.get("source_id") == chunk.get("source_id"):
+            prev_text = prev_c.get("text", "").strip()
+            prev_sents = [s.strip() for s in prev_text.split(". ") if s.strip()]
+            lead_in = ". ".join(prev_sents[-2:]) if len(prev_sents) >= 2 else prev_text
+            if lead_in and not lead_in.endswith("."):
+                lead_in += "."
+            parts.append(f"... {lead_in}")
+
+        parts.append(chunk.get("text", "").strip())
+
+        if next_c and next_c.get("source_id") == chunk.get("source_id"):
+            next_text = next_c.get("text", "").strip()
+            next_sents = [s.strip() for s in next_text.split(". ") if s.strip()]
+            lead_out = ". ".join(next_sents[:2]) if len(next_sents) >= 2 else next_text
+            parts.append(f"{lead_out} ...")
+
+        return "\n\n".join(parts)
+
     def retrieve(
         self, question: str, top_k: int = 4, min_score: float | None = None, rerank: bool | None = None,
         source_ids: list[str] | None = None, tags: list[str] | None = None,
@@ -608,6 +641,7 @@ class DocumentStore:
             current_embeddings = self.embeddings[current]
 
         target_sids = source_ids or list({c["source_id"] for c in current_chunks})
+        chunks_map = {c["chunk_id"]: c for c in current_chunks}
 
         # Query Decomposition for Multi-Hop / Comparative reasoning
         from backend.decompose import decompose_query
@@ -641,9 +675,12 @@ class DocumentStore:
                             seen_ids.add(cand["chunk_id"])
                             combined.append(cand)
             if combined:
-                return combined[:top_k]
+                results = combined[:top_k]
+                for item in results:
+                    item["expanded_text"] = self._expand_chunk_context(item, chunks_map)
+                return results
 
-        return self._retrieve_single(
+        results = self._retrieve_single(
             question,
             top_k=top_k,
             min_score=min_score,
@@ -652,6 +689,9 @@ class DocumentStore:
             current_embeddings=current_embeddings,
             target_sids=target_sids,
         )
+        for item in results:
+            item["expanded_text"] = self._expand_chunk_context(item, chunks_map)
+        return results
 
     def retrieve_deep(
         self,
