@@ -324,6 +324,7 @@ export function ChatPage() {
   const { chatId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const { currentOrganization } = useWorkspace();
   const { reload: reloadChats } = useChats();
   const [settings, setSettings] = useAnswerSettings();
   const [scope, setScope] = useState<string[]>([]);
@@ -335,8 +336,18 @@ export function ChatPage() {
   const abort = useRef<AbortController | null>(null);
   const createdHere = useRef<string | null>(null); // a chat this page just created (already on screen)
   const bottom = useRef<HTMLDivElement>(null);
-  const providers = useApi<{ providers: Provider[]; default: string | null }>("/providers");
+  const providers = useApi<{ providers: Provider[]; default: string | null }>(
+    currentOrganization ? `/providers?org=${encodeURIComponent(currentOrganization.id)}` : "/providers"
+  );
   const documents = useApi<DocumentsResponse>("/documents");
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      providers.reload();
+    };
+    window.addEventListener("afrisearch:providers-updated", handleUpdate);
+    return () => window.removeEventListener("afrisearch:providers-updated", handleUpdate);
+  }, [providers]);
 
   useEffect(() => {
     setSharedBy(null);

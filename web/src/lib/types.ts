@@ -77,6 +77,7 @@ export interface Provider {
   model: string;
   available: boolean;
   reason: string | null;
+  custom_key?: boolean;
 }
 
 export interface Source {

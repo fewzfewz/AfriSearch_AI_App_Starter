@@ -1209,8 +1209,14 @@ class PreparedAsk:
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
     limits.check(f"ask:{workspace.user.id}", limits.ASK_LIMITS)
     check_index_ready(workspace)
-    if workspace.organization_id:
-        byok_keys = db.get_all_raw_organization_ai_keys(workspace.organization_id)
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+
+    if org_id:
+        byok_keys = db.get_all_raw_organization_ai_keys(org_id)
         if byok_keys:
             llm.set_request_api_keys(byok_keys)
     provider = choose_provider(request)
@@ -1218,11 +1224,11 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         reason = llm.PROVIDERS[provider].unavailable_reason()
         if reason:
             raise HTTPException(status_code=400, detail=f"{llm.PROVIDERS[provider].label} is not available: {reason}")
-    if workspace.organization_id:
+    if org_id:
         prov = llm.PROVIDERS.get(provider) if provider else None
         model_name = prov.model if prov else None
         kind_name = prov.kind if prov else None
-        entitlements.check_can_ask(workspace.organization_id, model_name, kind=kind_name)
+        entitlements.check_can_ask(org_id, model_name, kind=kind_name)
     chat = None
     if request.chat_id:
         chat = db.get_chat(request.chat_id, workspace.id, workspace.user.id)
@@ -1359,7 +1365,12 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
     if prepared.chat:
         db.add_message(prepared.chat["id"], "user", request.question)
 
-    byok_keys = db.get_all_raw_organization_ai_keys(workspace.organization_id) if workspace.organization_id else {}
+    stream_org_id = workspace.organization_id
+    if not stream_org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            stream_org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(stream_org_id) if stream_org_id else {}
 
     def event(kind: str, **fields: Any) -> str:
         return json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"

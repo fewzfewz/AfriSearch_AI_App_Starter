@@ -17,10 +17,10 @@ PLANS: dict[str, dict[str, Any]] = {
         "max_documents": 50,
         "max_queries_per_month": 100,
         "allowed_models": [
-            "gemini-flash",
-            "qwen-small",
-            "gpt-4o-mini",
-            "local/qwen2.5-0.5b",
+            "gemini",
+            "qwen",
+            "gpt",
+            "local",
             "fake/echo",
             "canned",
         ],
@@ -141,13 +141,22 @@ def check_can_ask(org_id: str, model_id: str | None = None, kind: str | None = N
         if kind == "local" or model_id.startswith("fake"):
             pass
         else:
-            allowed = model_id in plan["allowed_models"] or any(model_id.startswith(m) for m in plan["allowed_models"])
-            if not allowed:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Model '{model_id}' is not available on the {plan['name']}. Upgrade to Pro or Business to use this model.",
-                    headers={"X-Upgrade-Required": "model"},
-                )
+            byok_keys = db.get_all_raw_organization_ai_keys(org_id)
+            has_byok = any(
+                p in model_id.lower()
+                or (p in ("openai", "chatgpt") and "gpt" in model_id.lower())
+                or (p in ("google", "gemini") and "gemini" in model_id.lower())
+                or (p in ("anthropic", "claude") and "claude" in model_id.lower())
+                for p in byok_keys.keys()
+            )
+            if not has_byok:
+                allowed = model_id in plan["allowed_models"] or any(model_id.startswith(m) for m in plan["allowed_models"])
+                if not allowed:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Model '{model_id}' is not available on the {plan['name']}. Upgrade to Pro or Business to use this model.",
+                        headers={"X-Upgrade-Required": "model"},
+                    )
 
     # 2. Monthly AI query quota check
     summary = db.get_organization_usage_summary(org_id)

@@ -20,6 +20,7 @@ export function useAnswerSettings() {
 }
 
 export function whereItRuns(provider: Provider): { text: string; tone: "blue" | "green" | "violet"; icon: JSX.Element } {
+  if (provider.custom_key) return { text: "Your Key", tone: "green", icon: <Cloud className="h-3 w-3" /> };
   if (provider.kind === "api") return { text: "Cloud", tone: "blue", icon: <Cloud className="h-3 w-3" /> };
   if (provider.label.includes("CPU")) return { text: "On this computer", tone: "green", icon: <Laptop className="h-3 w-3" /> };
   return { text: "Local GPU", tone: "violet", icon: <Cpu className="h-3 w-3" /> };
@@ -146,7 +147,14 @@ export function Composer({
                     >
                       <Check className={cx("mt-0.5 h-4 w-4 shrink-0 text-brand-700", !(answering && p.id === providerId) && "invisible")} />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium">{providerName(p)}</span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="block text-sm font-medium">{providerName(p)}</span>
+                          {p.custom_key && (
+                            <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                              Your API Key
+                            </span>
+                          )}
+                        </span>
                         <span className="block truncate text-xs text-ink-500">{p.model}</span>
                       </span>
                       <Badge tone={where.tone}>{where.icon}{where.text}</Badge>

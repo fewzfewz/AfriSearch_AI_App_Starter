@@ -125,6 +125,7 @@ class Provider:
             "model": self.model,
             "available": reason is None,
             "reason": reason,
+            "custom_key": get_request_api_key(self.id) is not None,
         }
 
 
@@ -278,7 +279,8 @@ def _openai_stream(system: str, prompt: str) -> Iterator[str]:
 
 # --- Gemini (Google) ----------------------------------------------------------
 
-GEMINI_MODEL = os.getenv("AFRISEARCH_GEMINI_MODEL", "gemini-4-argon")
+GEMINI_MODEL = os.getenv("AFRISEARCH_GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest"]
 
 
 def _gemini_check() -> str | None:
@@ -307,12 +309,22 @@ def _gemini_generate(system: str, prompt: str) -> str:
 
     custom_key = get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system))
-    _gemini_record(response)
-    text = (response.text or "").strip()
-    if not text:
-        raise ProviderError("Gemini returned no text (the response may have been blocked).")
-    return text
+    models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_err = None
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(model=model, contents=prompt, config=_gemini_config(system))
+            _gemini_record(response)
+            text = (response.text or "").strip()
+            if not text:
+                raise ProviderError("Gemini returned no text (the response may have been blocked).")
+            return text
+        except Exception as e:
+            last_err = e
+            if "RESOURCE_EXHAUSTED" in str(e) or "404" in str(e) or "NOT_FOUND" in str(e):
+                continue
+            raise
+    raise ProviderError(f"Gemini error: {last_err}")
 
 
 def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
@@ -320,17 +332,28 @@ def _gemini_stream(system: str, prompt: str) -> Iterator[str]:
 
     custom_key = get_request_api_key("gemini")
     client = genai.Client(api_key=custom_key) if custom_key else _client("gemini", genai.Client)
-    produced = False
-    last = None
-    for chunk in client.models.generate_content_stream(model=GEMINI_MODEL, contents=prompt, config=_gemini_config(system)):
-        last = chunk
-        if chunk.text:
-            produced = produced or bool(chunk.text.strip())
-            yield chunk.text
-    if last is not None:
-        _gemini_record(last)  # the last chunk carries the totals
-    if not produced:
-        raise ProviderError("Gemini returned no text (the response may have been blocked).")
+    models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_err = None
+    for model in models_to_try:
+        try:
+            produced = False
+            last = None
+            for chunk in client.models.generate_content_stream(model=model, contents=prompt, config=_gemini_config(system)):
+                last = chunk
+                if chunk.text:
+                    produced = produced or bool(chunk.text.strip())
+                    yield chunk.text
+            if last is not None:
+                _gemini_record(last)  # the last chunk carries the totals
+            if not produced:
+                raise ProviderError("Gemini returned no text (the response may have been blocked).")
+            return
+        except Exception as e:
+            last_err = e
+            if "RESOURCE_EXHAUSTED" in str(e) or "404" in str(e) or "NOT_FOUND" in str(e):
+                continue
+            raise
+    raise ProviderError(f"Gemini error: {last_err}")
 
 
 # --- Local open-weight models (Transformers, GPU) -----------------------------

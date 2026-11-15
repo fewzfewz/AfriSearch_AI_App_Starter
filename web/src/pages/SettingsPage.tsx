@@ -123,12 +123,23 @@ export function SettingsPage() {
   const handleSaveAiKey = async () => {
     if (!currentOrganization || !editingProvider || !newAiKey.trim()) return;
     setSavingAiKey(true);
+    const providerToActivate = editingProvider === "openai" ? "chatgpt" : editingProvider;
     try {
       await setOrganizationAIKey(currentOrganization.id, editingProvider, newAiKey.trim());
       await aiKeysApi.reload();
+      try {
+        const stored = JSON.parse(localStorage.getItem("afrisearch.answer-settings") || "{}");
+        localStorage.setItem(
+          "afrisearch.answer-settings",
+          JSON.stringify({ ...stored, provider: providerToActivate, mode: "answer" })
+        );
+      } catch {
+        // ignore storage errors
+      }
+      window.dispatchEvent(new Event("afrisearch:providers-updated"));
       setEditingProvider(null);
       setNewAiKey("");
-      toast("AI provider key saved successfully (encrypted at rest)", "success");
+      toast("AI provider key saved successfully. Enabled for Ask & Search!", "success");
     } catch (e: any) {
       toast(e.message || "Failed to save AI key", "error");
     } finally {
@@ -141,6 +152,7 @@ export function SettingsPage() {
     try {
       await deleteOrganizationAIKey(currentOrganization.id, provider);
       await aiKeysApi.reload();
+      window.dispatchEvent(new Event("afrisearch:providers-updated"));
       toast("AI provider key removed. Now using platform default", "success");
     } catch (e: any) {
       toast(e.message || "Failed to remove key", "error");
