@@ -1,6 +1,7 @@
 """Reading text from PDF, Office (Word, Excel, PowerPoint), text, HTML and image files, with OCR for scans."""
 from __future__ import annotations
 
+import logging
 import os
 from html.parser import HTMLParser
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, Callable
 from pypdf import PdfReader
 
 from backend import config
+
+logger = logging.getLogger("afrisearch.extract")
 
 # OCR (Tesseract) reads scanned PDF pages and photos of documents. Languages are
 # Tesseract codes joined with "+"; those not installed are skipped.
@@ -207,10 +210,26 @@ def extract_file(
             text = ocr_image(image)
         return ([(None, text)] if text else []), {None}
     if suffix == ".pdf":
-        reader = PdfReader(str(path))
-        pages, ocr_pages = [], set()
-        for page_number, page in enumerate(reader.pages, start=1):
-            text = (page.extract_text() or "").strip()
+        return extract_pdf(path, on_page=on_page)
+    raise ValueError("Unsupported file type.")
+
+
+def extract_pdf(
+    path: Path, on_page: PageCallback | None = None,
+) -> tuple[list[tuple[int | None, str]], set[int | None]]:
+    """Fast extraction using pypdfium2 C++ engine with graceful fallback to pypdf."""
+    pages: list[tuple[int | None, str]] = []
+    ocr_pages: set[int | None] = set()
+
+    # 1. Try fast pypdfium2 (up to 20x faster on large books)
+    try:
+        import pypdfium2
+        pdf = pypdfium2.PdfDocument(str(path))
+        total_pages = len(pdf)
+        for page_number in range(1, total_pages + 1):
+            page = pdf[page_number - 1]
+            textpage = page.get_textpage()
+            text = (textpage.get_text_range() or "").strip()
             used_ocr = False
             if len(text) < MIN_PAGE_CHARS:
                 scanned = ocr_pdf_page(path, page_number)
@@ -220,6 +239,26 @@ def extract_file(
             if text:
                 pages.append((page_number, text))
             if on_page:
-                on_page(page_number, len(reader.pages), used_ocr)
+                on_page(page_number, total_pages, used_ocr)
+        pdf.close()
         return pages, ocr_pages
-    raise ValueError("Unsupported file type.")
+    except Exception as exc:
+        logger.info("Fast pypdfium2 extraction skipped or failed (%s); falling back to pypdf", exc)
+
+    # 2. Standard pypdf fallback
+    reader = PdfReader(str(path))
+    pages, ocr_pages = [], set()
+    total_pages = len(reader.pages)
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        used_ocr = False
+        if len(text) < MIN_PAGE_CHARS:
+            scanned = ocr_pdf_page(path, page_number)
+            if len(scanned) > len(text):
+                text, used_ocr = scanned, True
+                ocr_pages.add(page_number)
+        if text:
+            pages.append((page_number, text))
+        if on_page:
+            on_page(page_number, total_pages, used_ocr)
+    return pages, ocr_pages

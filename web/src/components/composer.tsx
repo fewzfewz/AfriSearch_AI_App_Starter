@@ -90,6 +90,33 @@ export function Composer({
   const activeModelObj = providerModels.find((m) => m.id === activeModelId);
   const activeModelLabel = activeModelObj ? activeModelObj.name : activeModelId.split("/").pop() || "";
 
+  const deepModeContextLabel = (() => {
+    const pId = (provider?.id || "").toLowerCase();
+    const mId = (settings.model || provider?.model || "").toLowerCase();
+    if (pId.includes("gemini") || pId.includes("google") || mId.includes("gemini")) {
+      return "1M Context";
+    }
+    if (pId === "qwen-small" || pId.includes("cpu") || pId.includes("small") || mId.includes("0.5b")) {
+      return "Adaptive CPU";
+    }
+    if (pId.includes("claude") || pId.includes("anthropic") || pId.includes("chatgpt") || pId.includes("openai") || mId.includes("gpt-4") || mId.includes("claude")) {
+      return "High Context";
+    }
+    return "Deep Analysis";
+  })();
+
+  const deepModeBannerText = (() => {
+    const pId = (provider?.id || "").toLowerCase();
+    const mId = (settings.model || provider?.model || "").toLowerCase();
+    if (pId.includes("gemini") || pId.includes("google") || mId.includes("gemini")) {
+      return "Deep Book Mode active — Reading comprehensive multi-chapter context with 1M+ token reasoning";
+    }
+    if (pId === "qwen-small" || pId.includes("cpu") || pId.includes("small") || mId.includes("0.5b")) {
+      return "Deep Book Mode active — Multi-chapter context adaptively budgeted for fast local CPU intelligence";
+    }
+    return "Deep Book Mode active — Reading comprehensive multi-chapter context tailored for your active model";
+  })();
+
   useEffect(() => {
     const el = textarea.current;
     if (!el) return;
@@ -113,7 +140,7 @@ export function Composer({
         <div className="flex items-center justify-between border-b border-amber-200/60 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/40 dark:text-amber-200 rounded-t-[22px]">
           <span className="flex items-center gap-1.5 font-medium">
             <BookOpen className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-            Deep Book Mode active — Reading comprehensive multi-chapter context with 1M+ token reasoning
+            {deepModeBannerText}
           </span>
           <button
             type="button"
@@ -478,7 +505,7 @@ export function Composer({
             <span className="hidden sm:inline">Deep Book</span>
             {settings.deepMode && (
               <span className="hidden md:inline rounded bg-amber-500/20 px-1 py-0.2 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
-                1M Context
+                {deepModeContextLabel}
               </span>
             )}
           </button>
@@ -497,7 +524,7 @@ export function Composer({
                     <p className="text-sm font-medium">Deep Book Mode</p>
                   </div>
                   <p className="mt-0.5 text-xs text-ink-500">
-                    Feeds extensive multi-chapter context into large context windows (up to 1M tokens with Gemini) for holistic book understanding.
+                    Feeds extensive multi-chapter context adaptively budgeted to your active model (up to 1M tokens on Gemini, curated fast-budget on CPU) for holistic understanding.
                   </p>
                 </div>
                 <Toggle

@@ -1269,6 +1269,8 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
             request.question,
             source_ids=request.source_ids,
             tags=request.tags,
+            provider=provider,
+            model=request.model,
         )
         covered = bool(sources)
     else:
@@ -1374,7 +1376,11 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
     usage = llm.Usage()
     if prepared.provider:
         try:
-            system_prompt = answers.DEEP_SYSTEM_PROMPT if prepared.deep_mode else answers.SYSTEM_PROMPT
+            system_prompt = (
+                answers.deep_system_prompt_for_provider(prepared.provider)
+                if prepared.deep_mode
+                else answers.SYSTEM_PROMPT
+            )
             answer = answers.generate_answer(
                 request.question,
                 prepared.sources,
@@ -1449,8 +1455,18 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                 pieces.append(canned)
                 yield event("token", text=canned)
             else:
-                system_prompt = answers.DEEP_SYSTEM_PROMPT if prepared.deep_mode else answers.SYSTEM_PROMPT
-                prompt = answers.build_prompt(request.question, prepared.sources, prepared.history, deep_mode=prepared.deep_mode)
+                system_prompt = (
+                answers.deep_system_prompt_for_provider(prepared.provider)
+                if prepared.deep_mode
+                else answers.SYSTEM_PROMPT
+            )
+                prompt = answers.build_prompt(
+                    request.question,
+                    prepared.sources,
+                    prepared.history,
+                    deep_mode=prepared.deep_mode,
+                    provider=prepared.provider,
+                )
                 for piece in llm.stream(
                     prepared.provider,
                     system_prompt,

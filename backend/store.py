@@ -317,8 +317,10 @@ class DocumentStore:
         new_embeddings = None
         if new_chunks:
             progress({"stage": "embedding", "passages": len(new_chunks), "file_count": len(to_read)})
+            batch_size = int(os.getenv("AFRISEARCH_EMBED_BATCH_SIZE", "64"))
             new_embeddings = models.get_embedder().encode(
                 [models.PASSAGE_PREFIX + item["text"] for item in new_chunks],
+                batch_size=batch_size,
                 convert_to_numpy=True,
                 normalize_embeddings=True,
                 show_progress_bar=False,
@@ -473,6 +475,19 @@ class DocumentStore:
             show_progress_bar=False,
         ).astype(np.float32)
         scores = current_embeddings @ vector
+
+        # Hybrid lexical search: blend semantic similarity with exact keyword matching
+        query_words = set(re.findall(r"\w+", question.lower()))
+        stop_words = {"the", "a", "an", "in", "on", "of", "and", "or", "is", "are", "was", "were", "to", "for", "with", "at", "by", "from", "it", "this", "that", "what", "which", "how", "can", "you", "tell", "me", "about"}
+        terms = {w for w in query_words if w not in stop_words and len(w) > 1}
+        if terms:
+            lexical = np.zeros(len(current_chunks), dtype=np.float32)
+            for i, chunk in enumerate(current_chunks):
+                text_lower = chunk["text"].lower()
+                matches = sum(term in text_lower for term in terms)
+                lexical[i] = matches / len(terms)
+            scores = 0.80 * scores + 0.20 * lexical
+
         limit = max(top_k, models.RERANK_CANDIDATES) if rerank else top_k
         results = []
         for idx in np.argsort(-scores, kind="stable")[:limit]:
@@ -496,14 +511,22 @@ class DocumentStore:
         question: str,
         source_ids: list[str] | None = None,
         tags: list[str] | None = None,
-        max_total_chunks: int = 100,
-        coalesce_target_chars: int = 4000,
+        provider: str | None = None,
+        model: str | None = None,
+        max_total_chunks: int | None = None,
+        coalesce_target_chars: int | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve broad, multi-chapter or full document context for Deep Book Mode.
 
         For focused or book-length documents, loads comprehensive text ordered by chapter/page,
-        coalescing contiguous passages into cohesive multi-page sections.
+        coalescing contiguous passages into cohesive multi-page sections tailored to the model's budget.
         """
+        def_chunks, def_chars = model_context_budget(provider, model)
+        if max_total_chunks is None:
+            max_total_chunks = def_chunks
+        if coalesce_target_chars is None:
+            coalesce_target_chars = def_chars
+
         # Resolve tag scope if present
         query_tags = {t.strip().lower() for t in tags if t.strip()} if tags else None
         if query_tags is not None:
@@ -547,16 +570,11 @@ class DocumentStore:
                     len(self.embeddings) == len(self.chunks)
                 )
 
-            selected_indices = set()
             by_doc: dict[str, list[int]] = {}
             for idx in current_indices:
                 by_doc.setdefault(self.chunks[idx]["source_id"], []).append(idx)
 
-            for s_id, indices in by_doc.items():
-                selected_indices.update(indices[:6])  # Head: TOC, Intro, Chapter 1
-                if len(indices) > 6:
-                    selected_indices.update(indices[-4:])  # Tail: Conclusion / Summary
-
+            scores_by_idx: dict[int, float] = {}
             if has_embeddings:
                 try:
                     vector = models.get_embedder().encode(
@@ -567,20 +585,73 @@ class DocumentStore:
                     ).astype(np.float32)
                     chunk_embeddings = self.embeddings[current_indices]
                     scores = chunk_embeddings @ vector
-                    top_anchors = np.argsort(-scores)[: max_total_chunks // 2]
-                    for rel_idx in top_anchors:
-                        global_idx = current_indices[int(rel_idx)]
-                        selected_indices.add(global_idx)
-                        if global_idx - 1 >= 0 and self.chunks[global_idx - 1]["source_id"] == self.chunks[global_idx]["source_id"]:
-                            selected_indices.add(global_idx - 1)
-                        if global_idx + 1 < len(self.chunks) and self.chunks[global_idx + 1]["source_id"] == self.chunks[global_idx]["source_id"]:
-                            selected_indices.add(global_idx + 1)
+                    for rel_i, s in enumerate(scores):
+                        scores_by_idx[current_indices[rel_i]] = float(s)
                 except Exception as exc:
                     logger.warning("Deep mode semantic anchor search fallback: %s", exc)
 
-            selected_chunks = [self.chunks[i] for i in sorted(selected_indices)]
-            if len(selected_chunks) > max_total_chunks:
-                selected_chunks = selected_chunks[:max_total_chunks]
+            # Determine relevant documents based on question similarity
+            doc_scores: dict[str, float] = {}
+            for s_id, indices in by_doc.items():
+                if scores_by_idx:
+                    doc_scores[s_id] = max((scores_by_idx.get(idx, 0.0) for idx in indices), default=0.0)
+                else:
+                    doc_scores[s_id] = 1.0
+
+            sorted_docs = sorted(doc_scores.keys(), key=lambda d: doc_scores[d], reverse=True)
+            top_score = doc_scores.get(sorted_docs[0], 1.0) if sorted_docs else 1.0
+
+            # Keep docs within 70% of top score or at least top 1 doc
+            relevant_docs = {
+                d for d in sorted_docs
+                if doc_scores[d] >= max(0.35, top_score * 0.70)
+            }
+            if not relevant_docs and sorted_docs:
+                relevant_docs = {sorted_docs[0]}
+
+            # Prioritized chunk selection
+            chunk_priority: dict[int, float] = {}
+
+            # 1. Semantic anchors + immediate context
+            if scores_by_idx:
+                scored_candidates = [
+                    (scores_by_idx[idx], idx)
+                    for idx in current_indices
+                    if self.chunks[idx]["source_id"] in relevant_docs
+                ]
+                scored_candidates.sort(reverse=True)
+                for score, global_idx in scored_candidates[:max_total_chunks]:
+                    chunk_priority[global_idx] = max(chunk_priority.get(global_idx, 0.0), score + 1.0)
+                    if global_idx - 1 >= 0 and self.chunks[global_idx - 1]["source_id"] == self.chunks[global_idx]["source_id"]:
+                        chunk_priority[global_idx - 1] = max(chunk_priority.get(global_idx - 1, 0.0), score + 0.5)
+                    if global_idx + 1 < len(self.chunks) and self.chunks[global_idx + 1]["source_id"] == self.chunks[global_idx]["source_id"]:
+                        chunk_priority[global_idx + 1] = max(chunk_priority.get(global_idx + 1, 0.0), score + 0.5)
+
+            # 2. Structural anchors (TOC/Intro + Conclusion) for relevant docs
+            head_count = 2 if max_total_chunks <= 12 else 4
+            tail_count = 1 if max_total_chunks <= 12 else 3
+
+            for s_id in relevant_docs:
+                indices = by_doc.get(s_id, [])
+                for idx in indices[:head_count]:
+                    chunk_priority[idx] = max(chunk_priority.get(idx, 0.0), 0.8)
+                if len(indices) > head_count:
+                    for idx in indices[-tail_count:]:
+                        chunk_priority[idx] = max(chunk_priority.get(idx, 0.0), 0.7)
+
+            # If still room, fill sequentially from top relevant doc
+            if len(chunk_priority) < max_total_chunks and sorted_docs:
+                for idx in by_doc.get(sorted_docs[0], []):
+                    if idx not in chunk_priority:
+                        chunk_priority[idx] = 0.1
+                    if len(chunk_priority) >= max_total_chunks:
+                        break
+
+            # Pick highest priority chunks up to budget
+            top_selected = sorted(chunk_priority.keys(), key=lambda i: chunk_priority[i], reverse=True)[:max_total_chunks]
+
+            # Re-sort in natural document reading order!
+            selected_chunks = [self.chunks[i] for i in sorted(top_selected)]
 
         # Coalesce contiguous chunks from the same document into cohesive reading sections
         coalesced: list[dict[str, Any]] = []
@@ -646,6 +717,32 @@ class DocumentStore:
             })
 
         return coalesced
+
+
+def model_context_budget(provider: str | None, model: str | None) -> tuple[int, int]:
+    """Returns (max_chunks, coalesce_chars) tailored to the model's processing capacity."""
+    prov = (provider or "").lower()
+    mod = (model or "").lower()
+
+    # 1. Ultra-Large Context Cloud Models (Gemini: 1M+ tokens)
+    if "gemini" in prov or "gemini" in mod or "google" in prov:
+        return (100, 4500)  # ~100,000+ tokens
+
+    # 2. Large Context Cloud Models (Claude: 200k, GPT-4o: 128k)
+    if "claude" in prov or "anthropic" in prov or "chatgpt" in prov or "openai" in prov or "gpt-4" in mod or "o1" in mod or "o3" in mod:
+        return (50, 3000)   # ~40,000 tokens
+
+    # 3. Local CPU Models (e.g. qwen-small / 0.5B on CPU)
+    if prov in ("qwen-small", "local-cpu") or "0.5b" in mod or "small" in prov:
+        # High-density, fast CPU execution budget (fits CPU memory and generates crisp answers in seconds)
+        return (8, 900)   # ~1,200 - 1,800 tokens
+
+    # 4. Local GPU Models (qwen 27B, gemma 26B, gpt-oss)
+    if prov in ("qwen", "gemma", "gpt-oss", "local"):
+        return (25, 2000)   # ~12,000 tokens
+
+    # Default fallback
+    return (25, 2000)
 
 
 _stores: dict[Path, DocumentStore] = {}

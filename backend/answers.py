@@ -55,6 +55,17 @@ DEEP_SYSTEM_PROMPT = (
     "3. Structure your response with clear, logical sections (using bold headings, bullet points, and analytical summaries).\n"
     "4. Do not fabricate information. If a specific detail is not in the text, note it accurately."
 )
+
+
+def deep_system_prompt_for_provider(provider: str | None) -> str:
+    prov = (provider or "").lower()
+    if prov in ("qwen-small", "local-cpu") or "small" in prov:
+        return (
+            "You are AfriSearch, a careful document research assistant. Answer the question using the provided source passages. "
+            "Synthesize facts across the sections and cite every claim with its passage label like [S1], [S2]. "
+            "Be clear, direct, well-structured, and factual."
+        )
+    return DEEP_SYSTEM_PROMPT
 # How much of the conversation a follow-up question sees.
 HISTORY_TURNS = 2
 HISTORY_CHARS = 600
@@ -98,6 +109,7 @@ def build_prompt(
     sources: list[dict[str, Any]],
     history: list[dict[str, str]] | None = None,
     deep_mode: bool = False,
+    provider: str | None = None,
 ) -> str:
     source_blocks = []
     for i, item in enumerate(sources, start=1):
@@ -112,6 +124,18 @@ def build_prompt(
         if turns:
             conversation = ("EARLIER IN THIS CONVERSATION (context only; cite only the passages):\n"
                             + "\n\n".join(turns) + "\n\n")
+
+    prov = (provider or "").lower()
+    is_small_cpu = "small" in prov or "cpu" in prov
+
+    if deep_mode and is_small_cpu:
+        return (
+            f"QUESTION: {question}\n\n"
+            f"{conversation}SOURCE PASSAGES:\n{evidence}\n\n"
+            f"QUESTION: {question}\n\n"
+            f"{language_instruction(question)} "
+            "Directly answer the question above using facts from the source passages. Cite passage labels like [S1], [S2] for each point."
+        )
 
     if deep_mode:
         role_instruction = (
@@ -144,11 +168,11 @@ def generate_answer(
         return canned("no_sources", question)
     if not is_covered(sources) and not deep_mode:
         return canned("not_covered", question)
-    active_system = system_prompt or (DEEP_SYSTEM_PROMPT if deep_mode else SYSTEM_PROMPT)
+    active_system = system_prompt or (deep_system_prompt_for_provider(provider) if deep_mode else SYSTEM_PROMPT)
     return llm.generate(
         provider,
         active_system,
-        build_prompt(question, sources, history, deep_mode=deep_mode),
+        build_prompt(question, sources, history, deep_mode=deep_mode, provider=provider),
         usage,
         model=model,
         api_key=api_key,
