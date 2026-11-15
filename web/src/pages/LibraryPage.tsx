@@ -1,6 +1,6 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
-  AlertCircle, ArrowRight, BookOpen, Camera, CheckCircle2, Copy, Download, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, HelpCircle, ListTree, Loader2, MessageSquare, MoreHorizontal,
+  AlertCircle, ArrowRight, BookOpen, Camera, CheckCircle2, Copy, Download, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, Headphones, HelpCircle, ListTree, Loader2, MessageSquare, MoreHorizontal,
   Plus, RefreshCw, ScanText, Search, Sparkles, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileTile } from "../components/answer";
+import { AudioOverviewModal } from "../components/AudioOverviewModal";
 import { DocumentCompareModal } from "../components/DocumentCompareModal";
 import {
   Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Modal, PageHeader, Popover, Spinner, Stat, cx, useToast,
@@ -135,7 +136,15 @@ interface ExecutiveBrief {
   model?: string;
 }
 
-function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: () => void }) {
+function PassagesDrawer({
+  doc,
+  onClose,
+  onOpenPodcast,
+}: {
+  doc: DocumentInfo | null;
+  onClose: () => void;
+  onOpenPodcast?: (docIds: string[]) => void;
+}) {
   const { data, loading, error } = useApi<{ passages: Passage[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/passages` : null);
   const { data: outlineData } = useApi<{ outline: OutlineItem[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/outline` : null);
   const { data: summaryData, reload: reloadSummary } = useApi<{ summary: string | null; brief?: ExecutiveBrief | null }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/summary` : null);
@@ -426,6 +435,20 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
                   >
                     Discuss in Chat
                   </Button>
+                  {onOpenPodcast && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={<Headphones className="h-3 w-3 text-indigo-600" />}
+                      onClick={() => {
+                        onClose();
+                        onOpenPodcast([doc!.source_id]);
+                      }}
+                      title="Listen to 2-host audio overview"
+                    >
+                      Audio Overview
+                    </Button>
+                  )}
                   <button
                     type="button"
                     onClick={handleGenerateSummary}
@@ -827,6 +850,8 @@ export function LibraryPage() {
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [comparing, setComparing] = useState(false);
+  const [podcastOpen, setPodcastOpen] = useState(false);
+  const [podcastDocIds, setPodcastDocIds] = useState<string[]>([]);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [taggingDoc, setTaggingDoc] = useState<DocumentInfo | null>(null);
   const [bulkTagging, setBulkTagging] = useState(false);
@@ -1121,6 +1146,18 @@ export function LibraryPage() {
                   <span className="text-sm text-ink-500">{selected.length} selected</span>
                   <Button
                     size="sm"
+                    variant="secondary"
+                    icon={<Headphones className="h-3.5 w-3.5 text-indigo-500" />}
+                    onClick={() => {
+                      setPodcastDocIds(selected);
+                      setPodcastOpen(true);
+                    }}
+                    title="Generate AI 2-host audio briefing from selected documents"
+                  >
+                    Audio overview
+                  </Button>
+                  <Button
+                    size="sm"
                     variant={selected.length >= 2 ? "primary" : "secondary"}
                     icon={<GitCompare className="h-3.5 w-3.5" />}
                     onClick={() => setComparing(true)}
@@ -1206,6 +1243,7 @@ export function LibraryPage() {
                           {(close) => (
                             <>
                               <MenuItem icon={<Sparkles className="h-4 w-4 text-brand-600" />} onClick={() => { close(); setViewing(doc); }}>Executive briefing</MenuItem>
+                              <MenuItem icon={<Headphones className="h-4 w-4 text-indigo-600" />} onClick={() => { close(); setPodcastDocIds([doc.source_id]); setPodcastOpen(true); }}>Audio overview</MenuItem>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
                               <MenuItem icon={<GitCompare className="h-4 w-4" />} onClick={() => { close(); setSelected([doc.source_id]); setComparing(true); }}>Compare documents</MenuItem>
                               {canTag && <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>}
@@ -1237,7 +1275,14 @@ export function LibraryPage() {
         )}
       </div>
 
-      <PassagesDrawer doc={viewing} onClose={() => setViewing(null)} />
+      <PassagesDrawer
+        doc={viewing}
+        onClose={() => setViewing(null)}
+        onOpenPodcast={(docIds) => {
+          setPodcastDocIds(docIds);
+          setPodcastOpen(true);
+        }}
+      />
       <input ref={replaceInput} type="file" hidden accept={(config?.file_types ?? []).map((ext) => `.${ext}`).join(",")}
         onChange={(e) => { replaceWith(e.target.files?.[0]); e.target.value = ""; }} />
       <ConfirmDialog
@@ -1292,6 +1337,12 @@ export function LibraryPage() {
         initialDocIds={selected}
         allDocuments={data?.documents ?? []}
         onClose={() => setComparing(false)}
+      />
+      <AudioOverviewModal
+        open={podcastOpen}
+        initialDocIds={podcastDocIds}
+        allDocuments={data?.documents ?? []}
+        onClose={() => setPodcastOpen(false)}
       />
     </div>
   );

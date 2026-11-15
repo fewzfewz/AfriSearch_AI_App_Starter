@@ -247,3 +247,38 @@ export async function* streamCompare(
   }
 }
 
+export interface PodcastTurn {
+  speaker: "Alex" | "Sam";
+  text: string;
+  index: number;
+}
+
+export interface PodcastResult {
+  title: string;
+  script: PodcastTurn[];
+  full_text: string;
+  source_ids: string[];
+  documents: { source_id: string; source_name: string; pages: number }[];
+  tone: string;
+  length: string;
+  total_turns: number;
+  total_words: number;
+  estimated_seconds: number;
+  provider: string;
+  model: string | null;
+  created_at: string;
+}
+
+export async function generatePodcast(body: {
+  source_ids: string[];
+  tone?: "conversational" | "deep_dive" | "critique";
+  length?: "quick" | "medium" | "deep";
+  provider?: string | null;
+  model?: string | null;
+}): Promise<PodcastResult> {
+  return api<PodcastResult>("/documents/podcast", {
+    method: "POST",
+    json: body,
+  });
+}
+

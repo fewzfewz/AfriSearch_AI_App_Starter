@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, auth, billing, briefing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, auth, billing, briefing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, podcast, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -1319,6 +1319,52 @@ def compare_documents_stream(
         yield event("done", comparison_markdown=full_markdown, matrix_table=table, matrix_csv=table_csv)
 
     return StreamingResponse(stream_events(), media_type="application/x-ndjson")
+
+
+class PodcastRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=10)
+    tone: str = "conversational"
+    length: str = "medium"
+    provider: str | None = None
+    model: str | None = None
+
+
+@api.post("/documents/podcast")
+def generate_document_podcast(
+    body: PodcastRequest,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Generate a NotebookLM-style two-host podcast episode discussing documents."""
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+    if byok_keys:
+        llm.set_request_api_keys(byok_keys)
+
+    prov = body.provider or llm.default_provider() or "qwen-small"
+    api_key = None
+    if byok_keys and prov:
+        aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
+        api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
+
+    try:
+        podcast_data = podcast.generate_podcast(
+            workspace.store,
+            body.source_ids,
+            tone=body.tone,
+            length=body.length,
+            provider=prov,
+            model=body.model,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        logger.exception("Failed to generate podcast with %s", prov)
+        raise HTTPException(status_code=502, detail=f"Podcast generation failed: {exc}") from exc
+
+    return podcast_data
 
 
 @api.get("/documents/{source_id}/file")
