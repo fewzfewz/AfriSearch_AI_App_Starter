@@ -111,11 +111,28 @@ def build_prompt(
     deep_mode: bool = False,
     provider: str | None = None,
 ) -> str:
-    source_blocks = []
-    for i, item in enumerate(sources, start=1):
-        location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
-        source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{item['text']}")
-    evidence = "\n\n".join(source_blocks)
+    facets = [item.get("facet") for item in sources if item.get("facet")]
+    unique_facets = list(dict.fromkeys(facets))
+    if len(unique_facets) > 1:
+        source_blocks = []
+        for f in unique_facets:
+            source_blocks.append(f"=== TOPIC: {f} ===")
+            for i, item in enumerate(sources, start=1):
+                if item.get("facet") == f:
+                    location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
+                    source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{item['text']}")
+        evidence = "\n\n".join(source_blocks)
+        multi_facet_note = (
+            "\nNote: The question addresses multiple facets/chapters. Be sure to synthesize, compare, "
+            "and address each facet clearly using evidence from its corresponding source passages."
+        )
+    else:
+        source_blocks = []
+        for i, item in enumerate(sources, start=1):
+            location = format_pages(item.get("page"), item.get("page_end"), prefix=", ")
+            source_blocks.append(f"[S{i}] (from {item['source_name']}{location}):\n{item['text']}")
+        evidence = "\n\n".join(source_blocks)
+        multi_facet_note = ""
 
     conversation = ""
     if history:
@@ -154,7 +171,7 @@ def build_prompt(
     return (
         f"{role_instruction}"
         f"{conversation}SOURCE PASSAGES:\n{evidence}\n\nQUESTION: {question}\n\n"
-        f"{language_instruction(question)} "
+        f"{language_instruction(question)}{multi_facet_note}\n"
         "Write the answer in full, clear sentences, each followed by the label of the passage that supports it, e.g. [S1]."
     )
 
@@ -191,6 +208,7 @@ def source_payload(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "rerank_score": round(item["rerank_score"], 4) if "rerank_score" in item else None,
             "ocr": item.get("ocr", False),
             "text": item["text"],
+            "facet": item.get("facet"),
         }
         for i, item in enumerate(sources, start=1)
     ]

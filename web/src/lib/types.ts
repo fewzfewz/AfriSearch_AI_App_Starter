@@ -97,6 +97,7 @@ export interface Source {
   rerank_score: number | null;
   ocr: boolean;
   text: string;
+  facet?: string;
 }
 
 export interface OutlineItem {
@@ -199,6 +200,8 @@ export interface MessageData {
   provider?: string | null;
   model?: string | null;
   deep_mode?: boolean;
+  subqueries?: string[];
+  hybrid_search?: boolean;
   reranked?: boolean;
   covered?: boolean;
   sources?: Source[];

@@ -1,6 +1,6 @@
 // Asking questions: a chat with streamed, cited answers.
 import {
-  AlertTriangle, ArrowRight, BookOpen, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, ListChecks, Quote, RotateCcw,
+  AlertTriangle, ArrowRight, BookOpen, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, Layers, ListChecks, Quote, RotateCcw,
   Sparkles, Tag, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -114,8 +114,16 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: 
           {message.data.deep_mode && (
             <Badge tone="amber"><BookOpen className="h-3 w-3" />Deep Book Mode</Badge>
           )}
+          {message.data.subqueries && message.data.subqueries.length > 1 && (
+            <span title={message.data.subqueries.join(" | ")}>
+              <Badge tone="violet">
+                <Layers className="h-3 w-3" />Multi-Hop ({message.data.subqueries.length} facets)
+              </Badge>
+            </span>
+          )}
           {message.data.seconds !== undefined && !message.streaming && <span>· {message.data.seconds}s</span>}
           {message.data.reranked && <span>· reranked</span>}
+          {message.data.hybrid_search && <span>· BM25+Dense</span>}
         </div>
 
         {message.streaming && !message.content && (
@@ -435,6 +443,8 @@ export function ChatPage() {
               reranked: event.reranked,
               covered: event.covered,
               deep_mode: (event as any).deep_mode ?? settings.deepMode,
+              subqueries: (event as any).subqueries,
+              hybrid_search: (event as any).hybrid_search,
             },
           }));
           if (!ownChatId && event.chat_id) {

@@ -14,7 +14,7 @@ import time
 import urllib.request
 import zipfile
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -1297,6 +1297,7 @@ class PreparedAsk:
     covered: bool
     api_key: str | None = None
     deep_mode: bool = False
+    subqueries: list[str] = field(default_factory=list)
 
 
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
@@ -1339,6 +1340,7 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
             raise HTTPException(status_code=404, detail="Chat not found.")
     history = chat_history(chat)
 
+    subqueries: list[str] = []
     if request.deep_mode:
         sources = workspace.store.retrieve_deep(
             request.question,
@@ -1349,6 +1351,11 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         )
         covered = bool(sources)
     else:
+        from backend.decompose import decompose_query
+        detected_subs = decompose_query(request.question)
+        if len(detected_subs) > 1:
+            subqueries = detected_subs
+
         def search(query: str) -> list[dict[str, Any]]:
             return workspace.store.retrieve(
                 query, request.top_k, rerank=request.rerank, source_ids=request.source_ids, tags=request.tags
@@ -1378,6 +1385,7 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
         covered,
         api_key=provider_api_key,
         deep_mode=request.deep_mode,
+        subqueries=subqueries,
     )
 
 
@@ -1388,6 +1396,8 @@ def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]
         "provider": prepared.provider,
         "model": active_model,
         "deep_mode": prepared.deep_mode,
+        "subqueries": prepared.subqueries,
+        "hybrid_search": True,
         "reranked": any("rerank_score" in item for item in prepared.sources),
         "covered": prepared.covered,
         "chat_id": prepared.chat["id"] if prepared.chat else None,

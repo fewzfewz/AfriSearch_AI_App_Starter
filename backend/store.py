@@ -101,12 +101,15 @@ class DocumentStore:
         self.rebuild_lock = threading.Lock()
         self.chunks: list[dict[str, Any]] = []
         self.embeddings: np.ndarray | None = None
+        self._bm25_index: Any = None
+        self._bm25_chunks_len: int = -1
         self.load()
 
     # --- persistence -------------------------------------------------------------
 
     def load(self) -> None:
         self.chunks, self.embeddings = [], None
+        self._bm25_index, self._bm25_chunks_len = None, -1
         if self.index_path.exists() and self.embeddings_path.exists():
             try:
                 loaded_chunks = json.loads(self.index_path.read_text(encoding="utf-8"))
@@ -118,6 +121,7 @@ class DocumentStore:
                 pass  # keep the workspace usable; re-indexing rebuilds the files
 
     def _persist(self) -> None:
+        self._bm25_index, self._bm25_chunks_len = None, -1
         if self.chunks and self.embeddings is not None:
             self.index_path.write_text(json.dumps(self.chunks, ensure_ascii=False, indent=2), encoding="utf-8")
             np.save(self.embeddings_path, self.embeddings)
@@ -482,6 +486,76 @@ class DocumentStore:
                 for item in self.chunks if item["source_id"] == source_id
             ]
 
+    def _get_bm25_index(self, chunks: list[dict[str, Any]]) -> Any:
+        from backend.bm25 import BM25Index
+        if self._bm25_index is None or self._bm25_chunks_len != len(chunks):
+            corpus = [c["text"] for c in chunks]
+            self._bm25_index = BM25Index(corpus)
+            self._bm25_chunks_len = len(chunks)
+        return self._bm25_index
+
+    def _retrieve_single(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        rerank: bool,
+        current_chunks: list[dict[str, Any]],
+        current_embeddings: np.ndarray,
+        target_sids: list[str],
+    ) -> list[dict[str, Any]]:
+        vector = models.get_embedder().encode(
+            models.QUERY_PREFIX + query,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ).astype(np.float32)
+        dense_scores = current_embeddings @ vector
+        scores = np.array(dense_scores, copy=True)
+
+        # BM25 Okapi lexical scoring: boost passages with exact keyword matches
+        bm25_index = self._get_bm25_index(current_chunks)
+        bm25_scores = bm25_index.score(query)
+        max_bm25 = float(np.max(bm25_scores)) if len(bm25_scores) > 0 else 0.0
+        if max_bm25 > 0.0:
+            norm_bm25 = bm25_scores / (max_bm25 + 1e-6)
+            scores += 0.25 * norm_bm25
+
+        # Outline precision routing: check if query specifically targets a chapter or section
+        from backend import outline as doc_outline
+        for s_id in target_sids:
+            outl = self.get_document_outline(s_id)
+            matched = doc_outline.match_outline_target(query, outl)
+            if matched and matched.get("page"):
+                p_start = matched["page"]
+                p_end = matched.get("page_end", p_start)
+                for i, chunk in enumerate(current_chunks):
+                    if chunk["source_id"] == s_id:
+                        p = chunk.get("page")
+                        if p and p_start <= p <= p_end:
+                            scores[i] += 0.40  # Boost matching chapter passages
+                break
+
+        limit = max(top_k, models.RERANK_CANDIDATES) if rerank else top_k
+        results = []
+        for idx in np.argsort(-scores, kind="stable")[:limit]:
+            score = float(scores[int(idx)])
+            dense_val = float(dense_scores[int(idx)])
+            if dense_val < min_score and score < min_score:
+                break  # below semantic threshold
+            item = dict(current_chunks[int(idx)])
+            item["score"] = dense_val
+            item["hybrid_score"] = score
+            results.append(item)
+        if rerank and results:
+            rerank_scores = models.get_reranker().predict(
+                [(query, item["text"]) for item in results], show_progress_bar=False,
+            )
+            for item, value in zip(results, rerank_scores):
+                item["rerank_score"] = float(value)
+            results.sort(key=lambda item: item["rerank_score"], reverse=True)
+        return results[:top_k]
+
     def retrieve(
         self, question: str, top_k: int = 4, min_score: float | None = None, rerank: bool | None = None,
         source_ids: list[str] | None = None, tags: list[str] | None = None,
@@ -533,59 +607,51 @@ class DocumentStore:
             current_chunks = [self.chunks[i] for i in current]
             current_embeddings = self.embeddings[current]
 
-        vector = models.get_embedder().encode(
-            models.QUERY_PREFIX + question,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).astype(np.float32)
-        scores = current_embeddings @ vector
-
-        # Hybrid lexical search: blend semantic similarity with exact keyword matching
-        query_words = set(re.findall(r"\w+", question.lower()))
-        stop_words = {"the", "a", "an", "in", "on", "of", "and", "or", "is", "are", "was", "were", "to", "for", "with", "at", "by", "from", "it", "this", "that", "what", "which", "how", "can", "you", "tell", "me", "about"}
-        terms = {w for w in query_words if w not in stop_words and len(w) > 1}
-        if terms:
-            lexical = np.zeros(len(current_chunks), dtype=np.float32)
-            for i, chunk in enumerate(current_chunks):
-                text_lower = chunk["text"].lower()
-                matches = sum(term in text_lower for term in terms)
-                lexical[i] = matches / len(terms)
-            scores = 0.80 * scores + 0.20 * lexical
-
-        # Outline precision routing: check if query specifically targets a chapter or section
         target_sids = source_ids or list({c["source_id"] for c in current_chunks})
-        from backend import outline as doc_outline
-        for s_id in target_sids:
-            outl = self.get_document_outline(s_id)
-            matched = doc_outline.match_outline_target(question, outl)
-            if matched and matched.get("page"):
-                p_start = matched["page"]
-                p_end = matched.get("page_end", p_start)
-                for i, chunk in enumerate(current_chunks):
-                    if chunk["source_id"] == s_id:
-                        p = chunk.get("page")
-                        if p and p_start <= p <= p_end:
-                            scores[i] += 0.40  # Boost matching chapter passages
-                break
 
-        limit = max(top_k, models.RERANK_CANDIDATES) if rerank else top_k
-        results = []
-        for idx in np.argsort(-scores, kind="stable")[:limit]:
-            score = float(scores[int(idx)])
-            if score < min_score:
-                break  # scores are sorted, so the rest are lower too
-            item = dict(current_chunks[int(idx)])
-            item["score"] = score
-            results.append(item)
-        if rerank and results:
-            rerank_scores = models.get_reranker().predict(
-                [(question, item["text"]) for item in results], show_progress_bar=False,
-            )
-            for item, value in zip(results, rerank_scores):
-                item["rerank_score"] = float(value)
-            results.sort(key=lambda item: item["rerank_score"], reverse=True)
-        return results[:top_k]
+        # Query Decomposition for Multi-Hop / Comparative reasoning
+        from backend.decompose import decompose_query
+        subqueries = decompose_query(question)
+
+        if len(subqueries) > 1:
+            per_facet_k = max(2, (top_k + len(subqueries) - 1) // len(subqueries))
+            facet_buckets: list[list[dict[str, Any]]] = []
+            for sq in subqueries:
+                sq_res = self._retrieve_single(
+                    sq,
+                    top_k=per_facet_k,
+                    min_score=min_score,
+                    rerank=rerank,
+                    current_chunks=current_chunks,
+                    current_embeddings=current_embeddings,
+                    target_sids=target_sids,
+                )
+                for item in sq_res:
+                    item["facet"] = sq
+                facet_buckets.append(sq_res)
+
+            combined: list[dict[str, Any]] = []
+            seen_ids = set()
+            max_len = max(len(b) for b in facet_buckets) if facet_buckets else 0
+            for i in range(max_len):
+                for b in facet_buckets:
+                    if i < len(b):
+                        cand = b[i]
+                        if cand["chunk_id"] not in seen_ids:
+                            seen_ids.add(cand["chunk_id"])
+                            combined.append(cand)
+            if combined:
+                return combined[:top_k]
+
+        return self._retrieve_single(
+            question,
+            top_k=top_k,
+            min_score=min_score,
+            rerank=rerank,
+            current_chunks=current_chunks,
+            current_embeddings=current_embeddings,
+            target_sids=target_sids,
+        )
 
     def retrieve_deep(
         self,

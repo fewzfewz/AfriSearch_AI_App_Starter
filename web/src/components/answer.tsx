@@ -135,6 +135,11 @@ export function SourceCard({ source, highlight }: { source: Source; highlight?: 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <Badge tone="gray">{Math.round(source.score * 100)}% match</Badge>
         {source.rerank_score !== null && <Badge tone="gray">reranker {source.rerank_score.toFixed(1)}</Badge>}
+        {source.facet && (
+          <Badge tone="violet">
+            {source.facet}
+          </Badge>
+        )}
         {source.ocr && (
           <Badge tone="blue">
             <ScanText className="h-3 w-3" /> read with OCR
