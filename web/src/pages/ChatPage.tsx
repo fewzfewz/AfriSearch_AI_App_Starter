@@ -4,7 +4,7 @@ import {
   Sparkles, Tag, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnswerText, FileIcon, SourceCard, SourceChips } from "../components/answer";
 import { Composer, providerName, useAnswerSettings, whereItRuns } from "../components/composer";
 import { Alert, Badge, Button, IconButton, LogoMark, MenuItem, Modal, Popover, Spinner, cx, useToast } from "../components/ui";
@@ -485,6 +485,20 @@ export function ChatPage() {
       },
     });
   };
+
+  const location = useLocation();
+  const handledStateRef = useRef(false);
+
+  useEffect(() => {
+    if (location.state && (location.state as any).question && !handledStateRef.current && providers.data) {
+      handledStateRef.current = true;
+      const state = location.state as { question: string; scope?: string[] };
+      if (state.scope) {
+        setScope(state.scope);
+      }
+      ask(state.question);
+    }
+  }, [location.state, providers.data]);
 
   const docs = documents.data;
   const showEmpty = !chatId && messages.length === 0;

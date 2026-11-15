@@ -1,9 +1,10 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
-  AlertCircle, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, HardDrive, Loader2, MoreHorizontal,
-  Plus, RefreshCw, ScanText, Search, Tag, TextQuote, Trash2, Upload, X,
+  AlertCircle, BookOpen, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, HardDrive, ListTree, Loader2, MessageSquare, MoreHorizontal,
+  Plus, RefreshCw, ScanText, Search, Sparkles, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { FileTile } from "../components/answer";
 import {
   Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Modal, PageHeader, Popover, Spinner, Stat, cx, useToast,
@@ -12,7 +13,7 @@ import { api, authHeaders, openDocument, uploadFiles } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatPages, formatSize, timeAgo } from "../lib/format";
 import { useApi, useInterval } from "../lib/hooks";
-import type { DocumentInfo, DocumentsResponse, FailedFile, Job, Passage } from "../lib/types";
+import type { DocumentInfo, DocumentsResponse, FailedFile, Job, OutlineItem, Passage } from "../lib/types";
 import { useWorkspace } from "../lib/workspace";
 
 const PAGE_SIZE = 50;
@@ -113,9 +114,62 @@ function DropZone({ onFiles, accept, maxMb, disabled, compact }: {
 
 function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: () => void }) {
   const { data, loading, error } = useApi<{ passages: Passage[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/passages` : null);
+  const { data: outlineData } = useApi<{ outline: OutlineItem[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/outline` : null);
+  const { data: summaryData, reload: reloadSummary } = useApi<{ summary: string | null }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/summary` : null);
+
+  const [activeTab, setActiveTab] = useState<"outline" | "passages" | "summary">("outline");
+  const [selectedChapter, setSelectedChapter] = useState<OutlineItem | null>(null);
   const [query, setQuery] = useState("");
+  const [summarizing, setSummarizing] = useState(false);
   const toast = useToast();
-  const passages = (data?.passages ?? []).filter((p) => p.text.toLowerCase().includes(query.toLowerCase()));
+  const navigate = useNavigate();
+
+  const outline = outlineData?.outline ?? doc?.outline ?? [];
+  const summary = summaryData?.summary ?? doc?.summary;
+
+  useEffect(() => {
+    if (doc) {
+      setSelectedChapter(null);
+      setQuery("");
+      // Default to outline if available, otherwise passages
+      if (doc.outline && doc.outline.length > 0) {
+        setActiveTab("outline");
+      } else {
+        setActiveTab("passages");
+      }
+    }
+  }, [doc]);
+
+  const passages = (data?.passages ?? []).filter((p) => {
+    if (selectedChapter) {
+      const page = p.page || 1;
+      const start = selectedChapter.page;
+      const end = selectedChapter.page_end || start;
+      if (page < start || page > end) return false;
+    }
+    if (query) {
+      return p.text.toLowerCase().includes(query.toLowerCase());
+    }
+    return true;
+  });
+
+  const handleGenerateSummary = async () => {
+    if (!doc) return;
+    setSummarizing(true);
+    try {
+      await api<{ summary: string }>(`/documents/${encodeURIComponent(doc.source_id)}/summarize`, {
+        method: "POST",
+      });
+      toast("Executive summary generated!");
+      reloadSummary();
+      setActiveTab("summary");
+    } catch (e: any) {
+      toast(e.message || "Failed to generate summary", "error");
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
   return (
     <Drawer
       open={Boolean(doc)}
@@ -132,29 +186,203 @@ function PassagesDrawer({ doc, onClose }: { doc: DocumentInfo | null; onClose: (
         </span>
       )}
     >
-      <div className="relative mb-4">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find in this document"
-          className="w-full rounded-lg border border-ink-200 bg-transparent py-2 pl-9 pr-3 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-700" />
+      {/* Tab Switcher */}
+      <div className="flex items-center gap-1 border-b border-ink-200 pb-2 mb-4 text-xs font-medium dark:border-ink-800">
+        <button
+          type="button"
+          onClick={() => setActiveTab("outline")}
+          className={cx(
+            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
+            activeTab === "outline"
+              ? "bg-brand-500/10 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300 font-semibold"
+              : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800"
+          )}
+        >
+          <ListTree className="h-3.5 w-3.5" />
+          <span>Outline ({outline.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("passages")}
+          className={cx(
+            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
+            activeTab === "passages"
+              ? "bg-brand-500/10 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300 font-semibold"
+              : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800"
+          )}
+        >
+          <TextQuote className="h-3.5 w-3.5" />
+          <span>Passages ({data?.passages?.length ?? doc?.passages ?? 0})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("summary")}
+          className={cx(
+            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition",
+            activeTab === "summary"
+              ? "bg-brand-500/10 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300 font-semibold"
+              : "text-ink-600 hover:bg-ink-100 dark:text-ink-400 dark:hover:bg-ink-800"
+          )}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-brand-500" />
+          <span>AI Summary</span>
+        </button>
       </div>
-      {loading && <div className="flex justify-center py-10"><Spinner /></div>}
-      {error && <Alert tone="red">{error}</Alert>}
-      <ol className="space-y-3">
-        {passages.map((passage) => {
-          const number = (data?.passages ?? []).indexOf(passage) + 1;
-          return (
-            <li key={passage.chunk_id} className="rounded-xl border border-ink-200 p-4 dark:border-ink-800">
-              <div className="mb-2 flex items-center gap-2 text-xs text-ink-500">
-                <span className="font-semibold text-ink-700 dark:text-ink-300">Passage {number}</span>
-                {formatPages(passage.page, passage.page_end) && <span>· {formatPages(passage.page, passage.page_end)}</span>}
-                {passage.ocr && <Badge tone="blue">OCR</Badge>}
+
+      {/* Tab 1: Outline / Chapters */}
+      {activeTab === "outline" && (
+        <div className="space-y-2">
+          {outline.length === 0 ? (
+            <div className="py-12 text-center text-sm text-ink-500">
+              <BookOpen className="mx-auto mb-2 h-8 w-8 text-ink-400 opacity-60" />
+              <p className="font-medium text-ink-700 dark:text-ink-300">No formal Table of Contents detected.</p>
+              <p className="mt-1 text-xs text-ink-400">You can explore and search all passages directly.</p>
+              <Button
+                variant="secondary"
+                className="mt-4"
+                onClick={() => setActiveTab("passages")}
+              >
+                View Passages
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-1.5 max-h-[70vh] overflow-y-auto pr-1">
+              {outline.map((item, i) => (
+                <div
+                  key={i}
+                  className={cx(
+                    "group flex items-center justify-between rounded-xl border border-ink-200/80 p-2.5 transition hover:border-brand-300 hover:bg-brand-50/40 dark:border-ink-800 dark:hover:border-brand-700/60 dark:hover:bg-brand-950/20",
+                    item.level === 1 ? "bg-ink-50/50 dark:bg-ink-800/40 font-medium" : "ml-3 text-xs"
+                  )}
+                >
+                  <div className="min-w-0 flex-1 pr-2">
+                    <p className={cx("truncate text-xs", item.level === 1 ? "font-semibold text-ink-900 dark:text-ink-100" : "text-ink-700 dark:text-ink-300")}>
+                      {item.title}
+                    </p>
+                    <span className="text-[11px] text-ink-400">
+                      {item.page_end && item.page_end > item.page ? `Pages ${item.page}–${item.page_end}` : `Page ${item.page}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0 opacity-80 group-hover:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedChapter(item);
+                        setActiveTab("passages");
+                      }}
+                      className="rounded-md border border-ink-200 bg-white px-2 py-1 text-[11px] font-medium text-ink-700 hover:bg-ink-50 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-200"
+                    >
+                      Passages
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        navigate("/app", {
+                          state: {
+                            question: `Explain "${item.title}" in detail from ${doc!.source_name}`,
+                            scope: [doc!.source_id],
+                          },
+                        });
+                      }}
+                      title="Ask AI about this chapter"
+                      className="flex items-center gap-1 rounded-md bg-brand-500/10 px-2 py-1 text-[11px] font-medium text-brand-700 hover:bg-brand-500/20 dark:bg-brand-500/20 dark:text-brand-300"
+                    >
+                      <MessageSquare className="h-3 w-3" />
+                      <span>Ask AI</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 2: Passages */}
+      {activeTab === "passages" && (
+        <>
+          {selectedChapter && (
+            <div className="mb-3 flex items-center justify-between rounded-lg bg-brand-500/10 px-3 py-1.5 text-xs text-brand-800 dark:bg-brand-500/20 dark:text-brand-200">
+              <span>Filtered to chapter: <strong>{selectedChapter.title}</strong> (pp. {selectedChapter.page}{selectedChapter.page_end ? `–${selectedChapter.page_end}` : ""})</span>
+              <button
+                type="button"
+                onClick={() => setSelectedChapter(null)}
+                className="font-medium underline hover:text-brand-900 dark:hover:text-brand-100"
+              >
+                Clear filter
+              </button>
+            </div>
+          )}
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find in this document"
+              className="w-full rounded-lg border border-ink-200 bg-transparent py-2 pl-9 pr-3 text-sm focus:border-brand-400 focus:outline-none dark:border-ink-700" />
+          </div>
+          {loading && <div className="flex justify-center py-10"><Spinner /></div>}
+          {error && <Alert tone="red">{error}</Alert>}
+          <ol className="space-y-3">
+            {passages.map((passage) => {
+              const number = (data?.passages ?? []).indexOf(passage) + 1;
+              return (
+                <li key={passage.chunk_id} className="rounded-xl border border-ink-200 p-4 dark:border-ink-800">
+                  <div className="mb-2 flex items-center gap-2 text-xs text-ink-500">
+                    <span className="font-semibold text-ink-700 dark:text-ink-300">Passage {number}</span>
+                    {formatPages(passage.page, passage.page_end) && <span>· {formatPages(passage.page, passage.page_end)}</span>}
+                    {passage.ocr && <Badge tone="blue">OCR</Badge>}
+                  </div>
+                  <p className="whitespace-pre-line text-sm leading-6 text-ink-700 dark:text-ink-300">{passage.text}</p>
+                </li>
+              );
+            })}
+          </ol>
+          {!loading && data && passages.length === 0 && <p className="text-center text-sm text-ink-500">No passage matches your filter.</p>}
+        </>
+      )}
+
+      {/* Tab 3: Executive Summary */}
+      {activeTab === "summary" && (
+        <div className="space-y-4">
+          {summary ? (
+            <div className="rounded-xl border border-ink-200 bg-ink-50/30 p-4 dark:border-ink-800 dark:bg-ink-800/20">
+              <div className="flex items-center justify-between mb-3 border-b border-ink-100 pb-2 dark:border-ink-700/60">
+                <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  AI Executive Summary
+                </span>
+                <button
+                  type="button"
+                  onClick={handleGenerateSummary}
+                  disabled={summarizing}
+                  className="text-xs text-ink-500 hover:text-ink-700 underline dark:hover:text-ink-300"
+                >
+                  {summarizing ? "Regenerating..." : "Regenerate"}
+                </button>
               </div>
-              <p className="whitespace-pre-line text-sm leading-6 text-ink-700 dark:text-ink-300">{passage.text}</p>
-            </li>
-          );
-        })}
-      </ol>
-      {!loading && data && passages.length === 0 && <p className="text-center text-sm text-ink-500">No passage contains “{query}”.</p>}
+              <div className="whitespace-pre-line text-sm leading-6 text-ink-800 dark:text-ink-200">
+                {summary}
+              </div>
+            </div>
+          ) : (
+            <div className="py-12 text-center">
+              <Sparkles className="mx-auto mb-3 h-10 w-10 text-brand-500 opacity-80" />
+              <h4 className="text-base font-semibold text-ink-900 dark:text-ink-100">No Executive Summary Yet</h4>
+              <p className="mt-1 max-w-sm mx-auto text-xs text-ink-500">
+                Generate an AI-powered executive summary synthesizing the core themes, chapter breakdown, and key takeaways across this document.
+              </p>
+              <div className="mt-5">
+                <Button
+                  onClick={handleGenerateSummary}
+                  loading={summarizing}
+                  icon={<Sparkles className="h-4 w-4" />}
+                >
+                  Generate Executive Summary
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Drawer>
   );
 }

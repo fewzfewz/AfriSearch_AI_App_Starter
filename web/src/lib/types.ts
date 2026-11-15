@@ -99,6 +99,13 @@ export interface Source {
   text: string;
 }
 
+export interface OutlineItem {
+  title: string;
+  page: number;
+  page_end?: number;
+  level?: number;
+}
+
 export interface DocumentInfo {
   source_id: string;
   source_name: string;
@@ -109,6 +116,8 @@ export interface DocumentInfo {
   bytes: number | null;
   uploaded_at: string | null;
   tags?: string[];
+  outline?: OutlineItem[];
+  summary?: string | null;
 }
 
 export interface OcrStatus {

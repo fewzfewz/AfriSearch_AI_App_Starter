@@ -93,6 +93,8 @@ class DocumentStore:
         self.embeddings_path = directory / "embeddings.npy"
         self.manifest_path = directory / "manifest.json"
         self.tags_path = directory / "tags.json"
+        self.outlines_path = directory / "outlines.json"
+        self.summaries_path = directory / "summaries.json"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         # `lock` guards chunks/embeddings; `rebuild_lock` serializes changes to the index.
         self.lock = threading.Lock()
@@ -186,6 +188,59 @@ class DocumentStore:
                 if lower not in unique:
                     unique[lower] = t
         return sorted(unique.values(), key=lambda s: s.lower())
+
+    # --- outlines & summaries ----------------------------------------------------
+
+    def load_outlines(self) -> dict[str, list[dict[str, Any]]]:
+        if self.outlines_path.exists():
+            try:
+                data = json.loads(self.outlines_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except (OSError, ValueError):
+                return {}
+        return {}
+
+    def save_outlines(self, outlines: dict[str, list[dict[str, Any]]]) -> None:
+        self.outlines_path.write_text(json.dumps(outlines, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_document_outline(self, source_id: str) -> list[dict[str, Any]]:
+        outlines = self.load_outlines()
+        if source_id in outlines and outlines[source_id]:
+            return outlines[source_id]
+        try:
+            path = self.file_path(source_id)
+            pages, _ = extract.extract_file(path)
+            from backend import outline as doc_outline
+            extracted = doc_outline.extract_outline(path, pages)
+            if extracted:
+                outlines[source_id] = extracted
+                self.save_outlines(outlines)
+            return extracted
+        except Exception as exc:
+            logger.debug("Lazy outline extraction skipped for %s: %s", source_id, exc)
+            return []
+
+    def load_summaries(self) -> dict[str, str]:
+        if self.summaries_path.exists():
+            try:
+                data = json.loads(self.summaries_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items() if v}
+            except (OSError, ValueError):
+                return {}
+        return {}
+
+    def save_summaries(self, summaries: dict[str, str]) -> None:
+        self.summaries_path.write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_document_summary(self, source_id: str) -> str | None:
+        return self.load_summaries().get(source_id)
+
+    def set_document_summary(self, source_id: str, summary: str) -> None:
+        summaries = self.load_summaries()
+        summaries[source_id] = summary
+        self.save_summaries(summaries)
 
     def uploaded_files(self) -> list[Path]:
         return [
@@ -352,6 +407,12 @@ class DocumentStore:
             tags = self.load_tags()
             if tags.pop(source_id, None) is not None:
                 self.save_tags(tags)
+            outlines = self.load_outlines()
+            if outlines.pop(source_id, None) is not None:
+                self.save_outlines(outlines)
+            summaries = self.load_summaries()
+            if summaries.pop(source_id, None) is not None:
+                self.save_summaries(summaries)
             with self.lock:
                 keep = [i for i, item in enumerate(self.chunks) if item["source_id"] != source_id]
                 removed = len(self.chunks) - len(keep)
@@ -400,6 +461,8 @@ class DocumentStore:
             if item.get("index_version") != models.INDEX_VERSION:
                 stale.add(item["source_id"])
         tags_map = self.load_tags()
+        outlines_map = self.load_outlines()
+        summaries_map = self.load_summaries()
         for doc in documents.values():
             path = self.upload_dir / doc["source_id"]
             stat = path.stat() if path.is_file() else None
@@ -407,6 +470,8 @@ class DocumentStore:
             doc["uploaded_at"] = (datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
                                   if stat else None)
             doc["tags"] = tags_map.get(doc["source_id"], [])
+            doc["outline"] = outlines_map.get(doc["source_id"], [])
+            doc["summary"] = summaries_map.get(doc["source_id"])
         return list(documents.values()), len(stale)
 
     def passages(self, source_id: str) -> list[dict[str, Any]]:
@@ -487,6 +552,22 @@ class DocumentStore:
                 matches = sum(term in text_lower for term in terms)
                 lexical[i] = matches / len(terms)
             scores = 0.80 * scores + 0.20 * lexical
+
+        # Outline precision routing: check if query specifically targets a chapter or section
+        target_sids = source_ids or list({c["source_id"] for c in current_chunks})
+        from backend import outline as doc_outline
+        for s_id in target_sids:
+            outl = self.get_document_outline(s_id)
+            matched = doc_outline.match_outline_target(question, outl)
+            if matched and matched.get("page"):
+                p_start = matched["page"]
+                p_end = matched.get("page_end", p_start)
+                for i, chunk in enumerate(current_chunks):
+                    if chunk["source_id"] == s_id:
+                        p = chunk.get("page")
+                        if p and p_start <= p <= p_end:
+                            scores[i] += 0.40  # Boost matching chapter passages
+                break
 
         limit = max(top_k, models.RERANK_CANDIDATES) if rerank else top_k
         results = []
@@ -611,6 +692,27 @@ class DocumentStore:
 
             # Prioritized chunk selection
             chunk_priority: dict[int, float] = {}
+
+            # Outline-guided precision routing: if query explicitly matches a chapter/section
+            from backend import outline as doc_outline
+            matched_outline_range: tuple[str, int, int] | None = None
+            for s_id in relevant_docs:
+                outl = self.get_document_outline(s_id)
+                matched = doc_outline.match_outline_target(question, outl)
+                if matched and matched.get("page"):
+                    p_start = matched["page"]
+                    p_end = matched.get("page_end", p_start)
+                    matched_outline_range = (s_id, p_start, p_end)
+                    break
+
+            if matched_outline_range:
+                m_sid, m_start, m_end = matched_outline_range
+                for idx in current_indices:
+                    chunk = self.chunks[idx]
+                    if chunk["source_id"] == m_sid:
+                        p = chunk.get("page")
+                        if p and m_start <= p <= m_end:
+                            chunk_priority[idx] = max(chunk_priority.get(idx, 0.0), 3.0)
 
             # 1. Semantic anchors + immediate context
             if scores_by_idx:

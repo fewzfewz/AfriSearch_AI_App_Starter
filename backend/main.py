@@ -1128,6 +1128,81 @@ def document_passages(source_id: str, workspace: Workspace = Depends(current_wor
     return {"source_id": source_id, "source_name": passages[0]["source_name"], "passages": passages}
 
 
+@api.get("/documents/{source_id}/outline")
+def document_outline(source_id: str, workspace: Workspace = Depends(current_workspace)):
+    outline_data = workspace.store.get_document_outline(source_id)
+    return {"source_id": source_id, "outline": outline_data}
+
+
+@api.get("/documents/{source_id}/summary")
+def document_summary(source_id: str, workspace: Workspace = Depends(current_workspace)):
+    summary = workspace.store.get_document_summary(source_id)
+    return {"source_id": source_id, "summary": summary}
+
+
+class SummarizeRequest(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+
+
+@api.post("/documents/{source_id}/summarize")
+def summarize_document(
+    source_id: str,
+    body: SummarizeRequest | None = None,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Generate an executive multi-chapter summary of the document using an AI model."""
+    passages = workspace.store.passages(source_id)
+    if not passages:
+        raise HTTPException(status_code=404, detail="Document not found or has no indexed passages.")
+
+    doc_outline = workspace.store.get_document_outline(source_id)
+    doc_name = passages[0]["source_name"]
+
+    mid = len(passages) // 2
+    sampled = passages[:3] + (passages[mid : mid + 2] if len(passages) > 6 else []) + (passages[-2:] if len(passages) > 3 else [])
+    evidence = "\n\n".join(f"[Page {p.get('page', 1)}]: {p['text']}" for p in sampled)
+    outline_text = "\n".join(f"- {item['title']} (page {item['page']})" for item in doc_outline[:25])
+
+    prompt = (
+        f"Generate a comprehensive, executive summary for the document '{doc_name}'.\n\n"
+        f"TABLE OF CONTENTS / CHAPTER OUTLINE:\n{outline_text or 'No formal outline available.'}\n\n"
+        f"KEY EXTRACTED PASSAGES:\n{evidence}\n\n"
+        "Please provide a well-structured summary including:\n"
+        "1. **Core Objective & Overview**: What this document covers.\n"
+        "2. **Key Chapters & Main Takeaways**: Highlight the main sections.\n"
+        "3. **Audience & Practical Applications**: Who should read this and what value it offers."
+    )
+
+    req_provider = body.provider if body else None
+    req_model = body.model if body else None
+
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+    if byok_keys:
+        llm.set_request_api_keys(byok_keys)
+
+    prov = req_provider or llm.default_provider() or "qwen-small"
+    api_key = None
+    if byok_keys and prov:
+        aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
+        api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
+
+    sys_prompt = "You are AfriSearch, an expert document research assistant creating an executive summary."
+    try:
+        summary_text = llm.generate(prov, sys_prompt, prompt, model=req_model, api_key=api_key)
+    except Exception as exc:
+        logger.exception("Failed to generate document summary with %s", prov)
+        raise HTTPException(status_code=502, detail=f"Summarization failed: {exc}") from exc
+
+    workspace.store.set_document_summary(source_id, summary_text)
+    return {"source_id": source_id, "summary": summary_text}
+
+
 @api.get("/documents/{source_id}/file")
 def document_file(source_id: str, workspace: Workspace = Depends(current_workspace)):
     """The original uploaded file, e.g. to open a PDF at a cited page."""
