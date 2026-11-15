@@ -1,6 +1,6 @@
 // Asking questions: a chat with streamed, cited answers.
 import {
-  AlertTriangle, ArrowRight, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, ListChecks, Quote, RotateCcw,
+  AlertTriangle, ArrowRight, BookOpen, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, ListChecks, Quote, RotateCcw,
   Sparkles, Tag, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -111,6 +111,9 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy }: 
         <div className="flex min-h-8 flex-wrap items-center gap-1.5 text-xs text-ink-500">
           <span className="font-semibold text-ink-800 dark:text-ink-200">{passagesOnly ? "Passages" : providerName(provider)}</span>
           {where && <Badge tone={where.tone}>{where.icon}{where.text}</Badge>}
+          {message.data.deep_mode && (
+            <Badge tone="amber"><BookOpen className="h-3 w-3" />Deep Book Mode</Badge>
+          )}
           {message.data.seconds !== undefined && !message.streaming && <span>· {message.data.seconds}s</span>}
           {message.data.reranked && <span>· reranked</span>}
         </div>
@@ -418,10 +421,22 @@ export function ChatPage() {
         tags: tagScope.length ? tagScope : null,
         chat_id: ownChatId,
         save: true,
+        deep_mode: Boolean(settings.deepMode),
       };
       for await (const event of streamAsk(body, controller.signal)) {
         if (event.type === "sources") {
-          update(id, (m) => ({ ...m, data: { ...m.data, sources: event.sources, provider: event.provider, model: event.model, reranked: event.reranked, covered: event.covered } }));
+          update(id, (m) => ({
+            ...m,
+            data: {
+              ...m.data,
+              sources: event.sources,
+              provider: event.provider,
+              model: event.model,
+              reranked: event.reranked,
+              covered: event.covered,
+              deep_mode: (event as any).deep_mode ?? settings.deepMode,
+            },
+          }));
           if (!ownChatId && event.chat_id) {
             createdHere.current = event.chat_id;
             navigate(`/app/chat/${event.chat_id}`, { replace: true });

@@ -105,6 +105,8 @@ class AskRequest(BaseModel):
     chat_id: str | None = None
     # Save the question and answer in a new chat when no chat_id is given.
     save: bool = False
+    # Deep Book Mode / Long-Context analysis: read broad multi-chapter context across documents
+    deep_mode: bool = False
 
 
 class FeedbackRequest(BaseModel):
@@ -186,6 +188,7 @@ class V1AskRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
     tags: list[str] = Field(default_factory=list)
+    deep_mode: bool = False
 
 
 class V1SearchRequest(BaseModel):
@@ -1218,6 +1221,7 @@ class PreparedAsk:
     sources: list[dict[str, Any]]
     covered: bool
     api_key: str | None = None
+    deep_mode: bool = False
 
 
 def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool) -> PreparedAsk:
@@ -1260,34 +1264,43 @@ def prepare_ask(request: AskRequest, workspace: Workspace, check_available: bool
             raise HTTPException(status_code=404, detail="Chat not found.")
     history = chat_history(chat)
 
-    def search(query: str) -> list[dict[str, Any]]:
-        return workspace.store.retrieve(
-            query, request.top_k, rerank=request.rerank, source_ids=request.source_ids, tags=request.tags
+    if request.deep_mode:
+        sources = workspace.store.retrieve_deep(
+            request.question,
+            source_ids=request.source_ids,
+            tags=request.tags,
         )
+        covered = bool(sources)
+    else:
+        def search(query: str) -> list[dict[str, Any]]:
+            return workspace.store.retrieve(
+                query, request.top_k, rerank=request.rerank, source_ids=request.source_ids, tags=request.tags
+            )
 
-    sources = search(request.question)
-    # A follow-up like "and the price?" may find nothing on its own; then search
-    # again together with the previous question. Questions that work on their own
-    # (including a new topic in the same chat) are searched as they are.
-    with_context = answers.search_query(request.question, history)
-    if not answers.is_covered(sources) and with_context != request.question:
-        alternative = search(with_context)
-        if answers.is_covered(alternative):
-            sources = alternative
+        sources = search(request.question)
+        # A follow-up like "and the price?" may find nothing on its own; then search
+        # again together with the previous question. Questions that work on their own
+        # (including a new topic in the same chat) are searched as they are.
+        with_context = answers.search_query(request.question, history)
+        if not answers.is_covered(sources) and with_context != request.question:
+            alternative = search(with_context)
+            if answers.is_covered(alternative):
+                sources = alternative
+        covered = answers.is_covered(sources)
+
     if request.save and workspace.role == "viewer":
         raise HTTPException(status_code=403, detail="Viewers cannot create or save chats in this workspace.")
     if request.save and not chat:
         chat = db.create_chat(workspace.id, workspace.user.id, request.question)
-    covered = answers.is_covered(sources)
-    # When nothing is good enough, all closest passages are shown; otherwise only
-    # the ones close to the best, which are also all the model gets to see.
+
     return PreparedAsk(
         provider,
         chat,
         history,
-        answers.focus(sources) if covered else sources,
+        answers.focus(sources) if (covered and not request.deep_mode) else sources,
         covered,
         api_key=provider_api_key,
+        deep_mode=request.deep_mode,
     )
 
 
@@ -1297,6 +1310,7 @@ def search_summary(request: AskRequest, prepared: PreparedAsk) -> dict[str, Any]
         "question": request.question,
         "provider": prepared.provider,
         "model": active_model,
+        "deep_mode": prepared.deep_mode,
         "reranked": any("rerank_score" in item for item in prepared.sources),
         "covered": prepared.covered,
         "chat_id": prepared.chat["id"] if prepared.chat else None,
@@ -1343,7 +1357,7 @@ def save_turn(prepared: PreparedAsk, summary: dict[str, Any], answer: str | None
     if not prepared.chat:
         return None, None
     new_title = maybe_rename_chat(prepared.chat, summary["question"], answer)
-    data = {key: summary[key] for key in ("provider", "model", "reranked", "covered", "sources")}
+    data = {key: summary[key] for key in ("provider", "model", "deep_mode", "reranked", "covered", "sources")}
     data.update(removed_citations=removed, error=error, seconds=round(seconds, 1), usage=usage, suggestions=suggestions or [])
     message_id = db.add_message(prepared.chat["id"], "assistant", answer or "", data)["id"]
     return message_id, new_title
@@ -1360,6 +1374,7 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
     usage = llm.Usage()
     if prepared.provider:
         try:
+            system_prompt = answers.DEEP_SYSTEM_PROMPT if prepared.deep_mode else answers.SYSTEM_PROMPT
             answer = answers.generate_answer(
                 request.question,
                 prepared.sources,
@@ -1368,6 +1383,8 @@ def ask(request: AskRequest, workspace: Workspace = Depends(current_workspace)):
                 usage,
                 model=request.model,
                 api_key=prepared.api_key,
+                system_prompt=system_prompt,
+                deep_mode=prepared.deep_mode,
             )
         except llm.ProviderError as exc:
             account_usage(workspace, prepared.provider, usage)  # a refusal may still be billed
@@ -1432,10 +1449,11 @@ def ask_stream(request: AskRequest, workspace: Workspace = Depends(current_works
                 pieces.append(canned)
                 yield event("token", text=canned)
             else:
-                prompt = answers.build_prompt(request.question, prepared.sources, prepared.history)
+                system_prompt = answers.DEEP_SYSTEM_PROMPT if prepared.deep_mode else answers.SYSTEM_PROMPT
+                prompt = answers.build_prompt(request.question, prepared.sources, prepared.history, deep_mode=prepared.deep_mode)
                 for piece in llm.stream(
                     prepared.provider,
-                    answers.SYSTEM_PROMPT,
+                    system_prompt,
                     prompt,
                     usage,
                     model=request.model,
@@ -1615,6 +1633,7 @@ def v1_ask(
         rerank=body.rerank,
         tags=body.tags,
         save=False,
+        deep_mode=body.deep_mode,
     )
     res = ask(ask_req, workspace=ws)
     return {

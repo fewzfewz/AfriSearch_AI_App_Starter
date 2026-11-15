@@ -491,6 +491,162 @@ class DocumentStore:
             results.sort(key=lambda item: item["rerank_score"], reverse=True)
         return results[:top_k]
 
+    def retrieve_deep(
+        self,
+        question: str,
+        source_ids: list[str] | None = None,
+        tags: list[str] | None = None,
+        max_total_chunks: int = 100,
+        coalesce_target_chars: int = 4000,
+    ) -> list[dict[str, Any]]:
+        """Retrieve broad, multi-chapter or full document context for Deep Book Mode.
+
+        For focused or book-length documents, loads comprehensive text ordered by chapter/page,
+        coalescing contiguous passages into cohesive multi-page sections.
+        """
+        # Resolve tag scope if present
+        query_tags = {t.strip().lower() for t in tags if t.strip()} if tags else None
+        if query_tags is not None:
+            tags_map = self.load_tags()
+            matching_ids = {
+                s_id for s_id, doc_tags in tags_map.items()
+                if any(t.lower() in query_tags for t in doc_tags)
+            }
+            if not matching_ids:
+                return []
+            if source_ids is not None:
+                scope = set(source_ids) & matching_ids
+                if not scope:
+                    return []
+            else:
+                scope = matching_ids
+        else:
+            scope = set(source_ids) if source_ids else None
+
+        with self.lock:
+            if not self.chunks:
+                return []
+            current_chunks = [
+                item for item in self.chunks
+                if (scope is None or item["source_id"] in scope)
+            ]
+            if not current_chunks:
+                return []
+
+        # If total chunks in scope is within budget, keep all in natural document order
+        if len(current_chunks) <= max_total_chunks:
+            selected_chunks = list(current_chunks)
+        else:
+            with self.lock:
+                current_indices = [
+                    i for i, item in enumerate(self.chunks)
+                    if (scope is None or item["source_id"] in scope)
+                ]
+                has_embeddings = (
+                    self.embeddings is not None and
+                    len(self.embeddings) == len(self.chunks)
+                )
+
+            selected_indices = set()
+            by_doc: dict[str, list[int]] = {}
+            for idx in current_indices:
+                by_doc.setdefault(self.chunks[idx]["source_id"], []).append(idx)
+
+            for s_id, indices in by_doc.items():
+                selected_indices.update(indices[:6])  # Head: TOC, Intro, Chapter 1
+                if len(indices) > 6:
+                    selected_indices.update(indices[-4:])  # Tail: Conclusion / Summary
+
+            if has_embeddings:
+                try:
+                    vector = models.get_embedder().encode(
+                        models.QUERY_PREFIX + question,
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    ).astype(np.float32)
+                    chunk_embeddings = self.embeddings[current_indices]
+                    scores = chunk_embeddings @ vector
+                    top_anchors = np.argsort(-scores)[: max_total_chunks // 2]
+                    for rel_idx in top_anchors:
+                        global_idx = current_indices[int(rel_idx)]
+                        selected_indices.add(global_idx)
+                        if global_idx - 1 >= 0 and self.chunks[global_idx - 1]["source_id"] == self.chunks[global_idx]["source_id"]:
+                            selected_indices.add(global_idx - 1)
+                        if global_idx + 1 < len(self.chunks) and self.chunks[global_idx + 1]["source_id"] == self.chunks[global_idx]["source_id"]:
+                            selected_indices.add(global_idx + 1)
+                except Exception as exc:
+                    logger.warning("Deep mode semantic anchor search fallback: %s", exc)
+
+            selected_chunks = [self.chunks[i] for i in sorted(selected_indices)]
+            if len(selected_chunks) > max_total_chunks:
+                selected_chunks = selected_chunks[:max_total_chunks]
+
+        # Coalesce contiguous chunks from the same document into cohesive reading sections
+        coalesced: list[dict[str, Any]] = []
+        current_block: dict[str, Any] | None = None
+
+        for chunk in selected_chunks:
+            if current_block is None:
+                current_block = {
+                    "source_id": chunk["source_id"],
+                    "source_name": chunk["source_name"],
+                    "page": chunk.get("page"),
+                    "page_end": chunk.get("page_end") or chunk.get("page"),
+                    "ocr": chunk.get("ocr", False),
+                    "texts": [chunk["text"]],
+                    "total_len": len(chunk["text"]),
+                }
+            else:
+                same_doc = chunk["source_id"] == current_block["source_id"]
+                is_close_page = (
+                    chunk.get("page") is None or
+                    current_block["page_end"] is None or
+                    abs((chunk.get("page") or 0) - (current_block["page_end"] or 0)) <= 2
+                )
+                within_size = current_block["total_len"] + len(chunk["text"]) <= coalesce_target_chars
+
+                if same_doc and is_close_page and within_size:
+                    current_block["texts"].append(chunk["text"])
+                    current_block["total_len"] += len(chunk["text"])
+                    if chunk.get("page_end"):
+                        current_block["page_end"] = max(current_block["page_end"] or 0, chunk["page_end"])
+                    current_block["ocr"] = current_block["ocr"] or chunk.get("ocr", False)
+                else:
+                    coalesced.append({
+                        "chunk_id": f"{current_block['source_id']}-sec-{len(coalesced) + 1}",
+                        "source_id": current_block["source_id"],
+                        "source_name": current_block["source_name"],
+                        "page": current_block["page"],
+                        "page_end": current_block["page_end"],
+                        "ocr": current_block["ocr"],
+                        "score": 1.0,
+                        "text": "\n\n".join(current_block["texts"]),
+                    })
+                    current_block = {
+                        "source_id": chunk["source_id"],
+                        "source_name": chunk["source_name"],
+                        "page": chunk.get("page"),
+                        "page_end": chunk.get("page_end") or chunk.get("page"),
+                        "ocr": chunk.get("ocr", False),
+                        "texts": [chunk["text"]],
+                        "total_len": len(chunk["text"]),
+                    }
+
+        if current_block is not None:
+            coalesced.append({
+                "chunk_id": f"{current_block['source_id']}-sec-{len(coalesced) + 1}",
+                "source_id": current_block["source_id"],
+                "source_name": current_block["source_name"],
+                "page": current_block["page"],
+                "page_end": current_block["page_end"],
+                "ocr": current_block["ocr"],
+                "score": 1.0,
+                "text": "\n\n".join(current_block["texts"]),
+            })
+
+        return coalesced
+
 
 _stores: dict[Path, DocumentStore] = {}
 _stores_lock = threading.Lock()

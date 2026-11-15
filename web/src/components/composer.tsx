@@ -1,5 +1,5 @@
 // The question box, with the answer-model, document-scope and options pickers.
-import { ArrowUp, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Sparkles, Square, Tag } from "lucide-react";
+import { ArrowUp, BookOpen, Check, ChevronDown, Cloud, Cpu, FileSearch, Files, Laptop, SlidersHorizontal, Sparkles, Square, Tag } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStoredState } from "../lib/hooks";
 import type { DocumentInfo, Provider } from "../lib/types";
@@ -12,11 +12,12 @@ export interface AnswerSettings {
   topK: number;
   rerank: boolean;
   mode: "answer" | "passages";
+  deepMode?: boolean;
 }
 
 export function useAnswerSettings() {
   return useStoredState<AnswerSettings>("afrisearch.answer-settings", {
-    provider: null, model: null, topK: 4, rerank: true, mode: "answer",
+    provider: null, model: null, topK: 4, rerank: true, mode: "answer", deepMode: false,
   });
 }
 
@@ -108,6 +109,21 @@ export function Composer({
 
   return (
     <div className="rounded-[22px] border border-ink-200/90 bg-white shadow-lift transition focus-within:border-brand-300 focus-within:shadow-[0_0_0_4px_rgb(249_115_22/0.10),0_12px_32px_-8px_rgb(28_25_23/0.16)] dark:border-ink-700 dark:bg-ink-900 dark:focus-within:border-brand-800 dark:focus-within:shadow-[0_0_0_4px_rgb(194_65_12/0.18)]">
+      {settings.deepMode && (
+        <div className="flex items-center justify-between border-b border-amber-200/60 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/40 dark:text-amber-200 rounded-t-[22px]">
+          <span className="flex items-center gap-1.5 font-medium">
+            <BookOpen className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            Deep Book Mode active — Reading comprehensive multi-chapter context with 1M+ token reasoning
+          </span>
+          <button
+            type="button"
+            onClick={() => setSettings((s) => ({ ...s, deepMode: false }))}
+            className="text-[11px] font-medium underline opacity-80 hover:opacity-100"
+          >
+            Standard RAG
+          </button>
+        </div>
+      )}
       <textarea
         ref={textarea}
         rows={1}
@@ -119,7 +135,7 @@ export function Composer({
             submit();
           }
         }}
-        placeholder={answering ? "Ask about your documents, in any language…" : "Search your documents…"}
+        placeholder={answering ? (settings.deepMode ? "Ask a comprehensive question about your books or documents…" : "Ask about your documents, in any language…") : "Search your documents…"}
         aria-label="Your question"
         className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-[15px] leading-6 placeholder:text-ink-400 focus:outline-none"
       />
@@ -447,13 +463,50 @@ export function Composer({
             </div>
           </Popover>
 
-          <Popover up width="w-72" trigger={({ open, toggle }) => (
+          <button
+            type="button"
+            onClick={() => setSettings((s) => ({ ...s, deepMode: !s.deepMode }))}
+            title={settings.deepMode ? "Deep Book Mode Active: Full multi-chapter context" : "Enable Deep Book Mode for comprehensive book analysis"}
+            className={cx(
+              "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition",
+              settings.deepMode
+                ? "bg-amber-500/15 text-amber-800 border border-amber-500/30 dark:bg-amber-500/25 dark:text-amber-200 dark:border-amber-500/40 shadow-sm"
+                : "text-ink-600 hover:bg-ink-100 dark:text-ink-300 dark:hover:bg-ink-800"
+            )}
+          >
+            <BookOpen className={cx("h-3.5 w-3.5", settings.deepMode ? "text-amber-600 dark:text-amber-400" : "text-ink-500")} />
+            <span className="hidden sm:inline">Deep Book</span>
+            {settings.deepMode && (
+              <span className="hidden md:inline rounded bg-amber-500/20 px-1 py-0.2 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                1M Context
+              </span>
+            )}
+          </button>
+
+          <Popover up width="w-80" trigger={({ open, toggle }) => (
             <ToolbarButton open={open} onClick={toggle} label="Search options">
               <SlidersHorizontal className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Options</span>
             </ToolbarButton>
           )}>
             <div className="space-y-4 p-2.5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-ink-100 dark:border-ink-800">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <BookOpen className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                    <p className="text-sm font-medium">Deep Book Mode</p>
+                  </div>
+                  <p className="mt-0.5 text-xs text-ink-500">
+                    Feeds extensive multi-chapter context into large context windows (up to 1M tokens with Gemini) for holistic book understanding.
+                  </p>
+                </div>
+                <Toggle
+                  label="Deep Book Mode"
+                  checked={Boolean(settings.deepMode)}
+                  onChange={(value) => setSettings((s) => ({ ...s, deepMode: value }))}
+                />
+              </div>
+
               <div>
                 <div className="flex items-center justify-between text-sm">
                   <label htmlFor="top-k" className="font-medium">Passages to use</label>

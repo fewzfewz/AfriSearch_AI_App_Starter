@@ -189,6 +189,7 @@ export interface ChatSummary {
 export interface MessageData {
   provider?: string | null;
   model?: string | null;
+  deep_mode?: boolean;
   reranked?: boolean;
   covered?: boolean;
   sources?: Source[];
@@ -214,7 +215,7 @@ export interface ChatDetail extends Omit<ChatSummary, "shared"> {
 }
 
 export type StreamEvent =
-  | ({ type: "sources"; question: string; chat_id: string | null } & Required<
+  | ({ type: "sources"; question: string; chat_id: string | null; deep_mode?: boolean } & Required<
       Pick<MessageData, "provider" | "model" | "reranked" | "covered" | "sources">
     >)
   | { type: "token"; text: string }
