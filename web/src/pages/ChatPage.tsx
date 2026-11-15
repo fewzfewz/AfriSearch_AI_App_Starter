@@ -1,12 +1,13 @@
 // Asking questions: a chat with streamed, cited answers.
 import {
-  AlertTriangle, ArrowRight, BookOpen, BookOpenText, Check, Copy, Download, FileSearch, FolderOpen, Languages, Layers, ListChecks, Quote, RotateCcw,
+  AlertTriangle, ArrowRight, BookOpen, BookOpenText, Check, Copy, Download, FileSearch, FileText, FolderOpen, Languages, Layers, ListChecks, Quote, RotateCcw,
   Sparkles, Tag, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnswerText, FileIcon, SourceCard, SourceChips } from "../components/answer";
 import { Composer, providerName, useAnswerSettings, whereItRuns } from "../components/composer";
+import { ResearchReportModal } from "../components/ResearchReportModal";
 import { SplitReader, type ActiveReaderTarget } from "../components/SplitReader";
 import { Alert, Badge, Button, IconButton, LogoMark, MenuItem, Modal, Popover, Spinner, cx, useToast } from "../components/ui";
 import { ApiError, api, streamAsk } from "../lib/api";
@@ -68,7 +69,7 @@ function Progress({ searching }: { searching: boolean }) {
   );
 }
 
-function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy, onOpenReader }: {
+function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy, onOpenReader, onOpenReport }: {
   message: UiMessage;
   providers: Provider[];
   onRate: (message: UiMessage, rating: "up" | "down", comment: string) => Promise<void>;
@@ -76,6 +77,7 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy, on
   onAsk: (question: string) => void;
   busy: boolean;
   onOpenReader?: (target: ActiveReaderTarget) => void;
+  onOpenReport?: (msg: UiMessage) => void;
 }) {
   const toast = useToast();
   const sources = message.data.sources ?? [];
@@ -207,6 +209,11 @@ function AssistantMessage({ message, providers, onRate, onRetry, onAsk, busy, on
             <IconButton label="Download as Markdown" onClick={() => download("afrisearch-answer.md", exportMarkdown(message.question ?? "", message))}>
               <Download className="h-4 w-4" />
             </IconButton>
+            {onOpenReport && (
+              <IconButton label="Generate Research Dossier & Report" onClick={() => onOpenReport(message)}>
+                <FileText className="h-4 w-4 text-brand-600" />
+              </IconButton>
+            )}
             {message.question && providers.some((p) => p.available) && (
               <Popover up width="w-64" trigger={({ toggle }) => (
                 <IconButton label="Try again with another model" onClick={toggle} disabled={busy}><RotateCcw className="h-4 w-4" /></IconButton>
@@ -347,6 +354,9 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [sharedBy, setSharedBy] = useState<string | null>(null); // set when viewing someone else's shared chat
   const [readerTarget, setReaderTarget] = useState<ActiveReaderTarget | null>(null);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportInitialDocs, setReportInitialDocs] = useState<string[]>([]);
+  const [reportMessages, setReportMessages] = useState<any[]>([]);
   const abort = useRef<AbortController | null>(null);
   const createdHere = useRef<string | null>(null); // a chat this page just created (already on screen)
   const bottom = useRef<HTMLDivElement>(null);
@@ -396,6 +406,21 @@ export function ChatPage() {
 
   const update = (id: string, change: (m: UiMessage) => UiMessage) =>
     setMessages((all) => all.map((m) => (m.id === id ? change(m) : m)));
+
+  const openReportFromChat = (msg?: UiMessage) => {
+    if (msg) {
+      setReportMessages([
+        { role: "user", content: msg.question || "Research inquiry" },
+        { role: "assistant", content: msg.content, data: msg.data },
+      ]);
+      const docIds = (msg.data.sources || []).map((s: any) => s.source_id).filter(Boolean);
+      setReportInitialDocs(docIds.length > 0 ? docIds : scope);
+    } else {
+      setReportMessages(messages);
+      setReportInitialDocs(scope);
+    }
+    setReportModalOpen(true);
+  };
 
   const ask = async (question: string, providerOverride?: string) => {
     // A shared chat is read-only: asking starts the user's own chat.
@@ -551,6 +576,26 @@ export function ChatPage() {
               <div className="flex justify-center py-24"><Spinner /></div>
             ) : (
               <div className="space-y-8">
+                {messages.length > 0 && (
+                  <div className="flex items-center justify-between rounded-xl border border-ink-200/80 bg-ink-50/60 px-3.5 py-2 text-xs shadow-xs dark:border-ink-800 dark:bg-ink-900/60">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-brand-600" />
+                      <span className="font-semibold text-ink-800 dark:text-ink-200">
+                        Research Session Active
+                      </span>
+                      <span className="text-ink-400">· {messages.length} messages</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={<FileText className="h-3.5 w-3.5 text-brand-600" />}
+                      onClick={() => openReportFromChat()}
+                      title="Compile conversation findings & citations into an executive dossier"
+                    >
+                      Compile Research Dossier
+                    </Button>
+                  </div>
+                )}
                 {messages.map((message) =>
                   message.role === "user" ? (
                     <div key={message.id} className="flex animate-fade-in justify-end">
@@ -568,6 +613,7 @@ export function ChatPage() {
                       onAsk={ask}
                       busy={busy}
                       onOpenReader={setReaderTarget}
+                      onOpenReport={openReportFromChat}
                     />
                   ),
                 )}
@@ -657,6 +703,14 @@ export function ChatPage() {
           />
         </aside>
       )}
+
+      <ResearchReportModal
+        open={reportModalOpen}
+        initialDocIds={reportInitialDocs}
+        chatMessages={reportMessages}
+        allDocuments={docs?.documents ?? []}
+        onClose={() => setReportModalOpen(false)}
+      />
     </div>
   );
 }

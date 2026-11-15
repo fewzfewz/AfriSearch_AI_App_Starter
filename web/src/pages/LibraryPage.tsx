@@ -1,6 +1,6 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
-  AlertCircle, ArrowRight, BookOpen, Camera, CheckCircle2, Copy, Download, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, Headphones, HelpCircle, ListTree, Loader2, MessageSquare, MoreHorizontal,
+  AlertCircle, ArrowRight, BookOpen, Camera, CheckCircle2, Copy, Download, ExternalLink, FilePlus2, FileStack, FileText, FileUp, FolderOpen, GitCompare, HardDrive, Headphones, HelpCircle, ListTree, Loader2, MessageSquare, MoreHorizontal,
   Plus, RefreshCw, ScanText, Search, Sparkles, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -10,6 +10,7 @@ import remarkGfm from "remark-gfm";
 import { FileTile } from "../components/answer";
 import { AudioOverviewModal } from "../components/AudioOverviewModal";
 import { DocumentCompareModal } from "../components/DocumentCompareModal";
+import { ResearchReportModal } from "../components/ResearchReportModal";
 import {
   Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Modal, PageHeader, Popover, Spinner, Stat, cx, useToast,
 } from "../components/ui";
@@ -140,10 +141,12 @@ function PassagesDrawer({
   doc,
   onClose,
   onOpenPodcast,
+  onOpenReport,
 }: {
   doc: DocumentInfo | null;
   onClose: () => void;
   onOpenPodcast?: (docIds: string[]) => void;
+  onOpenReport?: (docIds: string[]) => void;
 }) {
   const { data, loading, error } = useApi<{ passages: Passage[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/passages` : null);
   const { data: outlineData } = useApi<{ outline: OutlineItem[] }>(doc ? `/documents/${encodeURIComponent(doc.source_id)}/outline` : null);
@@ -435,6 +438,20 @@ function PassagesDrawer({
                   >
                     Discuss in Chat
                   </Button>
+                  {onOpenReport && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={<FileText className="h-3 w-3 text-brand-600" />}
+                      onClick={() => {
+                        onClose();
+                        onOpenReport([doc!.source_id]);
+                      }}
+                      title="Generate executive research dossier / report"
+                    >
+                      Research Dossier
+                    </Button>
+                  )}
                   {onOpenPodcast && (
                     <Button
                       size="sm"
@@ -852,6 +869,8 @@ export function LibraryPage() {
   const [comparing, setComparing] = useState(false);
   const [podcastOpen, setPodcastOpen] = useState(false);
   const [podcastDocIds, setPodcastDocIds] = useState<string[]>([]);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportDocIds, setReportDocIds] = useState<string[]>([]);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [taggingDoc, setTaggingDoc] = useState<DocumentInfo | null>(null);
   const [bulkTagging, setBulkTagging] = useState(false);
@@ -1147,6 +1166,18 @@ export function LibraryPage() {
                   <Button
                     size="sm"
                     variant="secondary"
+                    icon={<FileText className="h-3.5 w-3.5 text-brand-600" />}
+                    onClick={() => {
+                      setReportDocIds(selected);
+                      setReportOpen(true);
+                    }}
+                    title="Generate formal research dossier / report from selected documents"
+                  >
+                    Research dossier
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     icon={<Headphones className="h-3.5 w-3.5 text-indigo-500" />}
                     onClick={() => {
                       setPodcastDocIds(selected);
@@ -1243,6 +1274,7 @@ export function LibraryPage() {
                           {(close) => (
                             <>
                               <MenuItem icon={<Sparkles className="h-4 w-4 text-brand-600" />} onClick={() => { close(); setViewing(doc); }}>Executive briefing</MenuItem>
+                              <MenuItem icon={<FileText className="h-4 w-4 text-brand-600" />} onClick={() => { close(); setReportDocIds([doc.source_id]); setReportOpen(true); }}>Research dossier</MenuItem>
                               <MenuItem icon={<Headphones className="h-4 w-4 text-indigo-600" />} onClick={() => { close(); setPodcastDocIds([doc.source_id]); setPodcastOpen(true); }}>Audio overview</MenuItem>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
                               <MenuItem icon={<GitCompare className="h-4 w-4" />} onClick={() => { close(); setSelected([doc.source_id]); setComparing(true); }}>Compare documents</MenuItem>
@@ -1281,6 +1313,10 @@ export function LibraryPage() {
         onOpenPodcast={(docIds) => {
           setPodcastDocIds(docIds);
           setPodcastOpen(true);
+        }}
+        onOpenReport={(docIds) => {
+          setReportDocIds(docIds);
+          setReportOpen(true);
         }}
       />
       <input ref={replaceInput} type="file" hidden accept={(config?.file_types ?? []).map((ext) => `.${ext}`).join(",")}
@@ -1343,6 +1379,12 @@ export function LibraryPage() {
         initialDocIds={podcastDocIds}
         allDocuments={data?.documents ?? []}
         onClose={() => setPodcastOpen(false)}
+      />
+      <ResearchReportModal
+        open={reportOpen}
+        initialDocIds={reportDocIds}
+        allDocuments={data?.documents ?? []}
+        onClose={() => setReportOpen(false)}
       />
     </div>
   );

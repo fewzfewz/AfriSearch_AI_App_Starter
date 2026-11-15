@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, auth, billing, briefing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, podcast, store
+from backend import __version__, answers, auth, billing, briefing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, podcast, report, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -1365,6 +1365,89 @@ def generate_document_podcast(
         raise HTTPException(status_code=502, detail=f"Podcast generation failed: {exc}") from exc
 
     return podcast_data
+
+
+class ReportGenerateRequest(BaseModel):
+    source_ids: list[str] | None = None
+    chat_messages: list[dict[str, Any]] | None = None
+    template: str = "executive"
+    title: str | None = None
+    focus_prompt: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+class DocxExportRequest(BaseModel):
+    title: str
+    markdown: str
+    documents: list[dict[str, Any]] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@api.post("/reports/generate")
+def generate_research_report(
+    body: ReportGenerateRequest,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Generate a formal executive dossier or research briefing."""
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+    if byok_keys:
+        llm.set_request_api_keys(byok_keys)
+
+    prov = body.provider or llm.default_provider() or "qwen-small"
+    api_key = None
+    if byok_keys and prov:
+        aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
+        api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
+
+    try:
+        report_data = report.generate_report(
+            workspace.store,
+            source_ids=body.source_ids,
+            chat_messages=body.chat_messages,
+            template=body.template,
+            title=body.title,
+            focus_prompt=body.focus_prompt,
+            provider=prov,
+            model=body.model,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        logger.exception("Failed to generate report with %s", prov)
+        raise HTTPException(status_code=502, detail=f"Report generation failed: {exc}") from exc
+
+    return report_data
+
+
+@api.post("/reports/export/docx")
+def export_report_docx(
+    body: DocxExportRequest,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Export research report as a styled native Microsoft Word (.docx) document."""
+    try:
+        stream = report.markdown_to_docx(
+            body.title,
+            body.markdown,
+            documents=body.documents,
+            metadata=body.metadata,
+        )
+    except Exception as exc:
+        logger.exception("Failed to export report docx")
+        raise HTTPException(status_code=500, detail=f"Word export failed: {exc}") from exc
+
+    safe_title = re.sub(r"[^\w\-_\. ]", "", body.title).strip().replace(" ", "_") or "Research_Report"
+    filename = f"{safe_title}.docx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @api.get("/documents/{source_id}/file")

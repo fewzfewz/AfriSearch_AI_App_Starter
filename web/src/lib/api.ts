@@ -282,3 +282,69 @@ export async function generatePodcast(body: {
   });
 }
 
+export interface ReportDocument {
+  source_id: string;
+  source_name: string;
+  pages: number;
+  passages_count?: number;
+}
+
+export interface ReportResult {
+  title: string;
+  template: "executive" | "comprehensive" | "review";
+  template_label: string;
+  markdown: string;
+  executive_summary: string;
+  word_count: number;
+  reading_time_minutes: number;
+  documents: ReportDocument[];
+  source_ids: string[];
+  provider: string;
+  model: string | null;
+  created_at: string;
+}
+
+export async function generateReport(body: {
+  source_ids?: string[];
+  chat_messages?: any[];
+  template?: "executive" | "comprehensive" | "review";
+  title?: string;
+  focus_prompt?: string;
+  provider?: string | null;
+  model?: string | null;
+}): Promise<ReportResult> {
+  return api<ReportResult>("/reports/generate", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export async function downloadReportDocx(body: {
+  title: string;
+  markdown: string;
+  documents?: ReportDocument[];
+  metadata?: Record<string, any>;
+}): Promise<void> {
+  const headers = await authHeaders();
+  headers["Content-Type"] = "application/json";
+  const res = await fetch("/api/reports/export/docx", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await errorFrom(res);
+    throw err;
+  }
+  const blob = await res.blob();
+  const safeTitle = body.title.replace(/[^\w\-_\. ]/g, "").trim().replace(/\s+/g, "_") || "Research_Report";
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement("a"), {
+    href: url,
+    download: `${safeTitle}.docx`,
+  });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+
