@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend import __version__, answers, auth, billing, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
+from backend import __version__, answers, auth, billing, compare, config, db, entitlements, extract, jobs, limits, llm, mailer, models, store
 from backend.auth import Organization, User, current_organization, current_user
 from backend.text import clean_citations
 
@@ -1201,6 +1201,128 @@ def summarize_document(
 
     workspace.store.set_document_summary(source_id, summary_text)
     return {"source_id": source_id, "summary": summary_text}
+
+
+class CompareRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=2, max_length=10)
+    focus: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+@api.post("/documents/compare")
+def compare_documents(
+    body: CompareRequest,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Perform a side-by-side comparative cross-analysis of 2 or more documents."""
+    doc_contexts = compare.collect_comparison_context(workspace.store, body.source_ids, focus=body.focus)
+    if len(doc_contexts) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 valid documents with indexed passages are required for comparison.",
+        )
+
+    sys_prompt, user_prompt = compare.build_compare_prompt(doc_contexts, focus=body.focus)
+
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+    if byok_keys:
+        llm.set_request_api_keys(byok_keys)
+
+    prov = body.provider or llm.default_provider() or "qwen-small"
+    api_key = None
+    if byok_keys and prov:
+        aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
+        api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
+
+    try:
+        comparison_text = llm.generate(prov, sys_prompt, user_prompt, model=body.model, api_key=api_key)
+    except Exception as exc:
+        logger.exception("Failed to generate document comparison with %s", prov)
+        raise HTTPException(status_code=502, detail=f"Comparison failed: {exc}") from exc
+
+    matrix_table = compare.extract_matrix_table(comparison_text)
+    matrix_csv = compare.markdown_table_to_csv(matrix_table) if matrix_table else ""
+
+    docs_info = [
+        {"source_id": ctx["source_id"], "source_name": ctx["source_name"], "pages": ctx["pages"]}
+        for ctx in doc_contexts
+    ]
+
+    return {
+        "source_ids": body.source_ids,
+        "documents": docs_info,
+        "focus": body.focus or "General Comparison",
+        "comparison_markdown": comparison_text,
+        "matrix_table": matrix_table,
+        "matrix_csv": matrix_csv,
+        "provider": prov,
+        "model": body.model,
+    }
+
+
+@api.post("/documents/compare/stream")
+def compare_documents_stream(
+    body: CompareRequest,
+    workspace: Workspace = Depends(current_workspace),
+):
+    """Stream live document comparison with real-time newline-delimited JSON chunks."""
+    doc_contexts = compare.collect_comparison_context(workspace.store, body.source_ids, focus=body.focus)
+    if len(doc_contexts) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 valid documents with indexed passages are required for comparison.",
+        )
+
+    sys_prompt, user_prompt = compare.build_compare_prompt(doc_contexts, focus=body.focus)
+
+    org_id = workspace.organization_id
+    if not org_id:
+        user_orgs = db.list_user_organizations(workspace.user.id)
+        if user_orgs:
+            org_id = user_orgs[0]["id"]
+    byok_keys = db.get_all_raw_organization_ai_keys(org_id) if org_id else {}
+
+    prov = body.provider or llm.default_provider() or "qwen-small"
+    api_key = None
+    if byok_keys and prov:
+        aliases = {"chatgpt": "openai", "openai": "chatgpt", "claude": "anthropic", "anthropic": "claude", "gemini": "google", "google": "gemini"}
+        api_key = byok_keys.get(prov) or byok_keys.get(aliases.get(prov, ""))
+
+    docs_info = [
+        {"source_id": ctx["source_id"], "source_name": ctx["source_name"], "pages": ctx["pages"]}
+        for ctx in doc_contexts
+    ]
+
+    def event(kind: str, **fields: Any) -> str:
+        return json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
+
+    def stream_events():
+        if byok_keys:
+            llm.set_request_api_keys(byok_keys)
+        yield event("start", documents=docs_info, focus=body.focus or "General Comparison", provider=prov, model=body.model)
+
+        pieces: list[str] = []
+        try:
+            for piece in llm.stream(prov, sys_prompt, user_prompt, model=body.model, api_key=api_key):
+                pieces.append(piece)
+                yield event("token", text=piece)
+        except Exception as exc:
+            logger.exception("Streaming comparison failed with %s", prov)
+            yield event("error", detail=f"Comparison streaming failed: {exc}")
+            return
+
+        full_markdown = "".join(pieces)
+        table = compare.extract_matrix_table(full_markdown)
+        table_csv = compare.markdown_table_to_csv(table) if table else ""
+        yield event("done", comparison_markdown=full_markdown, matrix_table=table, matrix_csv=table_csv)
+
+    return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
 
 @api.get("/documents/{source_id}/file")

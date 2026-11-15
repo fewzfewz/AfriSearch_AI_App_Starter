@@ -199,3 +199,51 @@ export async function deleteOrganizationAPIKey(orgId: string, keyId: string): Pr
     method: "DELETE",
   });
 }
+
+export interface CompareResult {
+  source_ids: string[];
+  documents: { source_id: string; source_name: string; pages: number }[];
+  focus: string;
+  comparison_markdown: string;
+  matrix_table: string;
+  matrix_csv: string;
+  provider: string;
+  model: string | null;
+}
+
+export type CompareStreamEvent =
+  | { type: "start"; documents: { source_id: string; source_name: string; pages: number }[]; focus: string; provider: string; model?: string }
+  | { type: "token"; text: string }
+  | { type: "done"; comparison_markdown: string; matrix_table: string; matrix_csv: string }
+  | { type: "error"; detail: string };
+
+export async function compareDocuments(body: {
+  source_ids: string[];
+  focus?: string | null;
+  provider?: string | null;
+  model?: string | null;
+}): Promise<CompareResult> {
+  return api<CompareResult>("/documents/compare", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export async function* streamCompare(
+  body: { source_ids: string[]; focus?: string | null; provider?: string | null; model?: string | null },
+  signal?: AbortSignal,
+): AsyncGenerator<CompareStreamEvent> {
+  const headers = await authHeaders();
+  headers["Content-Type"] = "application/json";
+  const response = await fetch("/api/documents/compare/stream", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) throw await errorFrom(response);
+  for await (const line of readLines(response.body)) {
+    yield JSON.parse(line) as CompareStreamEvent;
+  }
+}
+

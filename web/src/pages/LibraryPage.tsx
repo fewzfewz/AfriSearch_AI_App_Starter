@@ -1,11 +1,12 @@
 // The workspace's documents: upload, indexing progress, and the document list.
 import {
-  AlertCircle, BookOpen, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, HardDrive, ListTree, Loader2, MessageSquare, MoreHorizontal,
+  AlertCircle, BookOpen, Camera, CheckCircle2, ExternalLink, FilePlus2, FileStack, FileUp, FolderOpen, GitCompare, HardDrive, ListTree, Loader2, MessageSquare, MoreHorizontal,
   Plus, RefreshCw, ScanText, Search, Sparkles, Tag, TextQuote, Trash2, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileTile } from "../components/answer";
+import { DocumentCompareModal } from "../components/DocumentCompareModal";
 import {
   Alert, Badge, Button, Card, ConfirmDialog, Drawer, EmptyState, IconButton, MenuItem, Modal, PageHeader, Popover, Spinner, Stat, cx, useToast,
 } from "../components/ui";
@@ -681,6 +682,7 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [taggingDoc, setTaggingDoc] = useState<DocumentInfo | null>(null);
   const [bulkTagging, setBulkTagging] = useState(false);
@@ -973,6 +975,14 @@ export function LibraryPage() {
               {selected.length > 0 && (
                 <div className="ml-auto flex items-center gap-2">
                   <span className="text-sm text-ink-500">{selected.length} selected</span>
+                  <Button
+                    size="sm"
+                    variant={selected.length >= 2 ? "primary" : "secondary"}
+                    icon={<GitCompare className="h-3.5 w-3.5" />}
+                    onClick={() => setComparing(true)}
+                  >
+                    {selected.length >= 2 ? `Compare ${selected.length} documents` : "Compare with..."}
+                  </Button>
                   {canTag && <Button size="sm" variant="secondary" icon={<Tag className="h-3.5 w-3.5" />} onClick={() => setBulkTagging(true)}>Tag selected</Button>}
                   {canManage && <Button size="sm" variant="danger" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setDeletingSelected(true)}>Delete selected</Button>}
                   <Button size="sm" variant="ghost" onClick={() => setSelected([])}>Clear</Button>
@@ -1039,6 +1049,7 @@ export function LibraryPage() {
                           {(close) => (
                             <>
                               <MenuItem icon={<Search className="h-4 w-4" />} onClick={() => { close(); setViewing(doc); }}>Read passages</MenuItem>
+                              <MenuItem icon={<GitCompare className="h-4 w-4" />} onClick={() => { close(); setSelected([doc.source_id]); setComparing(true); }}>Compare documents</MenuItem>
                               {canTag && <MenuItem icon={<Tag className="h-4 w-4" />} onClick={() => { close(); setTaggingDoc(doc); }}>Edit tags</MenuItem>}
                               <MenuItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); openDocument(doc.source_id).catch((e: Error) => toast(e.message, "error")); }}>Open original</MenuItem>
                               {canManage && <MenuItem icon={<FilePlus2 className="h-4 w-4" />} onClick={() => { close(); setReplacing(doc); replaceInput.current?.click(); }}>Upload new version</MenuItem>}
@@ -1117,6 +1128,12 @@ export function LibraryPage() {
         workspaceTags={workspaceTags}
         onClose={() => setBulkTagging(false)}
         onApply={handleBulkApplyTags}
+      />
+      <DocumentCompareModal
+        open={comparing}
+        initialDocIds={selected}
+        allDocuments={data?.documents ?? []}
+        onClose={() => setComparing(false)}
       />
     </div>
   );
